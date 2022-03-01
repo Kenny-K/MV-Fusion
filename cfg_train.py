@@ -356,4 +356,8 @@ def PolarOffsetMain(args, cfg):
 
 if __name__ =='__main__':
     args, cfg = global_args, global_cfg
+    print("---------Training flags---------")
+    common_utils.print_config(vars(args))
+    print("\n---------Training config----------")
+    common_utils.print_config(cfg)
     PolarOffsetMain(args, cfg)

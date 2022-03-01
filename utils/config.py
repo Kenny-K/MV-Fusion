@@ -93,7 +93,7 @@ cfg.LOCAL_RANK = 0
 
 def parse_config():
     parser = argparse.ArgumentParser(description='')
-    parser.add_argument('--config', type=str, default='cfgs/default.yaml')
+    parser.add_argument('--config', type=str, default='cfgs/release/dsnet.yaml')
     parser.add_argument('--ckpt_name', type=str, default='PolarOffset.pth')
     parser.add_argument('--launcher', type=str, default=None)
     parser.add_argument('--batch_size', type=int, default=4)

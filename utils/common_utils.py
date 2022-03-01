@@ -9,6 +9,7 @@ import subprocess
 import pickle
 import shutil
 from scipy import stats as s
+from easydict import EasyDict
 import numba as nb
 from .evaluate_panoptic import class_inv_lut
 
@@ -206,3 +207,14 @@ def save_test_results(ret_dict, output_dir, batch):
 
 def safe_vis(xyz, labels, ignore_zero=True):
     pass
+
+# add a config printer
+def print_config(dic: dict, indent :int = 0):
+    for key,value in dic.items():
+        if type(value) in [dict, EasyDict]:
+            print('\t'*indent, key)
+            print_config(value, indent+1)
+        else:
+            print('\t'*indent + '-', key, ': ', value)
+    
+    return
