@@ -212,9 +212,9 @@ def safe_vis(xyz, labels, ignore_zero=True):
 def print_config(dic: dict, indent :int = 0):
     for key,value in dic.items():
         if type(value) in [dict, EasyDict]:
-            print('\t'*indent, key)
+            print('    '*indent, key)
             print_config(value, indent+1)
         else:
-            print('\t'*indent + '-', key, ': ', value)
+            print('    '*indent + '-', key, ': ', value)
     
     return

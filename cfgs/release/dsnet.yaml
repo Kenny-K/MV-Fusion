@@ -1,6 +1,6 @@
 DATA_CONFIG:
     DATASET_NAME: SemanticKitti
-    DATASET_PATH: ./data
+    DATASET_PATH: "/sharedata/home/jiangq/DATA/kitti/data"
     NCLASS: 20
     RETURN_REF: True
     RETURN_INS_ID: True

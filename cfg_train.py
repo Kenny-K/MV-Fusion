@@ -24,11 +24,13 @@ warnings.filterwarnings("ignore")
 def PolarOffsetMain(args, cfg):
     if args.launcher == None:
         dist_train = False
+        print("Single GPU Train.")
     else:
         args.batch_size, cfg.LOCAL_RANK = getattr(common_utils, 'init_dist_%s' % args.launcher)(
             args.batch_size, args.tcp_port, args.local_rank, backend='nccl'
         )
         dist_train = True
+        print("Data Distributed Training")
     cfg['DIST_TRAIN'] = dist_train
     output_dir = os.path.join('./output', args.tag)
     ckpt_dir = os.path.join(output_dir, 'ckpt')
@@ -356,8 +358,8 @@ def PolarOffsetMain(args, cfg):
 
 if __name__ =='__main__':
     args, cfg = global_args, global_cfg
-    print("---------Training flags---------")
-    common_utils.print_config(vars(args))
-    print("\n---------Training config----------")
-    common_utils.print_config(cfg)
+    # print("---------Training flags---------")
+    # common_utils.print_config(vars(args))
+    # print("\n---------Training config----------")
+    # common_utils.print_config(cfg)
     PolarOffsetMain(args, cfg)
