@@ -7,6 +7,7 @@ from .modules import BEV_Unet
 from .modules import PointNet
 from .modules import spconv_unet
 from .modules import pytorch_meanshift
+from .modules import RangeNet
 from .loss import instance_losses
 from .loss import lovasz_losses
 from utils.evaluate_panoptic import init_eval, eval_one_scan_w_fname, printResults, valid_xentropy_ids, class_lut
@@ -472,9 +473,9 @@ class PolarOffsetSpconvPytorchMeanshift(PolarOffsetSpconv):
                     sem_logits = self.sem_head(sem_fea)
             else:
                 coor, feature_3d = self.voxelize_spconv(batch)
-                sem_fea, ins_fea = self.backbone(feature_3d, coor, len(batch['grid']))
-                sem_logits = self.sem_head(sem_fea)
-            pred_offsets, ins_fea_list = self.ins_head(ins_fea, batch)
+                sem_fea, ins_fea = self.backbone(feature_3d, coor, len(batch['grid']))  # [num_voxels, 128] | [480,360,32]
+                sem_logits = self.sem_head(sem_fea)     # [1, num_cls, 480, 360, 32]
+            pred_offsets, ins_fea_list = self.ins_head(ins_fea, batch)  # [N, 3], [N, 32]
         loss_dict = self.calc_loss(sem_logits, pred_offsets, batch, need_minus_one=False)
         valid = batch['pt_valid']
         if is_test:
@@ -486,6 +487,177 @@ class PolarOffsetSpconvPytorchMeanshift(PolarOffsetSpconv):
             embedding = [offset + torch.from_numpy(xyz).cuda() for offset, xyz in zip(pred_offsets, batch['pt_cart_xyz'])]
         else:
             raise NotImplementedError
+        batch['ins_fea_list'] = ins_fea_list
+        pt_ins_ids_preds, meanshift_loss, bandwidth_weight_summary = self.pytorch_meanshift(batch['pt_cart_xyz'], embedding, valid, batch, need_cluster=is_test)
+
+        loss_dict['bandwidth_weight_summary'] = bandwidth_weight_summary
+        loss_dict['meanshift_loss'] = meanshift_loss
+        loss_dict['offset_loss_list'] += meanshift_loss
+        loss_dict['loss'] += sum(meanshift_loss)
+
+        if is_test:
+            if require_cluster:
+                merged_sem_preds = self.merge_ins_sem(pt_sem_preds, pt_ins_ids_preds)
+            else:
+                merged_sem_preds = pt_sem_preds
+            if before_merge_evaluator != None:
+                self.update_evaluator(before_merge_evaluator, pt_sem_preds, pt_ins_ids_preds, batch)
+            if after_merge_evaluator != None:
+                self.update_evaluator(after_merge_evaluator, merged_sem_preds, pt_ins_ids_preds, batch)
+
+            loss_dict['sem_preds'] = merged_sem_preds
+            loss_dict['ins_preds'] = pt_ins_ids_preds
+            loss_dict['ins_num'] = np.unique(pt_ins_ids_preds[0]).shape[0]
+
+        return loss_dict
+
+class PolarOffsetSpconvPytorchFusion(PolarOffsetSpconv):
+    def __init__(self, cfg):
+        super(PolarOffsetSpconvPytorchMeanshift, self).__init__(cfg)
+        self.pytorch_meanshift = pytorch_meanshift.PytorchMeanshift(cfg, self.ins_loss, self.cluster_fn)
+        self.range_branch = RangeNet.RangeNet(cfg)
+        self.is_fix_semantic_instance = False
+
+    def fix_semantic_instance_parameters(self):
+        fix_list = [self.backbone, self.sem_head, self.vfe_model, self.fea_compression, self.ins_head]
+        for mod in fix_list:
+            for p in mod.parameters():
+                p.requires_grad = False
+        self.is_fix_semantic_instance = True
+
+    def voxelize_fusion(self, inputs):
+        grid_ind = inputs['grid']
+        pt_fea = inputs['pt_fea']
+        range_img = inputs['range_image']
+        cords = inputs['pt_pix_mapping']
+
+        pt_fea_ten = [torch.from_numpy(i).type(torch.FloatTensor).cuda() for i in pt_fea]
+        grid_ind_ten = [torch.from_numpy(i).cuda() for i in grid_ind]
+        range_img = torch.from_numpy(range_img).cuda()
+        cords = [torch.from_numpy(i).type(torch.int64).cuda() for i in cords]
+
+        pt_fea = pt_fea_ten
+        xy_ind = grid_ind_ten
+
+        # concate everything
+        cat_pt_ind = []
+        cat_cords = []
+        for i_batch in range(len(xy_ind)):
+            cat_pt_ind.append(F.pad(xy_ind[i_batch],(1,0),'constant',value = i_batch))
+            cat_cords.append(F.pad(cords[i_batch], (1,0),'constant',value=i_batch))
+
+        cat_pt_fea = torch.cat(pt_fea,dim = 0)
+        cat_pt_ind = torch.cat(cat_pt_ind,dim = 0)
+        cat_cords = torch.cat(cat_cords, dim = 0)
+        pt_num = cat_pt_ind.shape[0]
+
+        origin_cords = torch.clone(cat_cords)
+        # shuffle the data
+        cur_dev = pt_fea[0].get_device()
+        shuffled_ind = torch.randperm(pt_num,device = cur_dev)
+        cat_pt_fea = cat_pt_fea[shuffled_ind,:]
+        cat_pt_ind = cat_pt_ind[shuffled_ind,:]
+        cat_cords = cat_cords[shuffled_ind,:]
+
+        # unique xy grid index
+        unq, unq_inv, unq_cnt = torch.unique(cat_pt_ind,return_inverse=True, return_counts=True, dim=0)
+        unq = unq.type(torch.int64)
+
+        # subsample pts
+        if self.pt_selection == 'random':
+            grp_ind = grp_range_torch(unq_cnt,cur_dev)[torch.argsort(torch.argsort(unq_inv))] # convert the array that is in the order of grid to the order of cat_pt_feature
+            remain_ind = grp_ind < self.max_pt # randomly sample max_pt points inside a grid
+        elif self.pt_selection == 'farthest':
+            unq_ind = np.split(np.argsort(unq_inv.detach().cpu().numpy()), np.cumsum(unq_cnt.detach().cpu().numpy()[:-1]))
+            remain_ind = np.zeros((pt_num,),dtype = np.bool)
+            np_cat_fea = cat_pt_fea.detach().cpu().numpy()[:,:3]
+            pool_in = []
+            for i_inds in unq_ind:
+                if len(i_inds) > self.max_pt:
+                    pool_in.append((np_cat_fea[i_inds,:],self.max_pt))
+            if len(pool_in) > 0:
+                pool = multiprocessing.Pool(multiprocessing.cpu_count())
+                FPS_results = pool.starmap(parallel_FPS, pool_in)
+                pool.close()
+                pool.join()
+            count = 0
+            for i_inds in unq_ind:
+                if len(i_inds) <= self.max_pt:
+                    remain_ind[i_inds] = True
+                else:
+                    remain_ind[i_inds[FPS_results[count]]] = True
+                    count += 1
+
+        cat_pt_fea = cat_pt_fea[remain_ind,:]
+        cat_pt_ind = cat_pt_ind[remain_ind,:]
+        cat_cords = cat_cords[remain_ind,:]
+        unq_inv = unq_inv[remain_ind]
+        unq_cnt = torch.clamp(unq_cnt,max=self.max_pt)
+
+        # process feature
+        processed_cat_pt_fea = self.vfe_model(cat_pt_fea)
+        processed_range_fea = self.range_branch(range_img)
+        #TODO: maybe use pointnet to extract features inside each grid and each grid share the same parameters instead of apply pointnet to global point clouds?
+        # This kind of global pointnet is more memory efficient cause otherwise we will have to alloc [480 x 360 x 32 x 64 x C] tensor in order to apply pointnet to each grid
+
+        # Concat Point feature and Range feature(concat)
+        rg_fea_in_pt_view = processed_range_fea[cat_cords[:,0], :, cat_cords[:,1], cat_cords[:,2]]
+        fusion_fea = torch.cat([processed_cat_pt_fea, rg_fea_in_pt_view], axis=1)
+
+        if self.pt_pooling == 'max':
+            pooled_data = torch_scatter.scatter_max(fusion_fea, unq_inv, dim=0)[0] # choose the max feature for each grid
+        else: raise NotImplementedError
+
+        if self.fea_compre:
+            processed_pooled_data = self.fea_compression(pooled_data)
+        else:
+            processed_pooled_data = pooled_data
+
+        # stuff pooled data into 4D tensor
+        # out_data_dim = [len(pt_fea),self.grid_size[0],self.grid_size[1],self.pt_fea_dim]
+        # out_data = torch.zeros(out_data_dim, dtype=torch.float32).to(cur_dev)
+        # out_data[unq[:,0],unq[:,1],unq[:,2],:] = processed_pooled_data
+        # out_data = out_data.permute(0,3,1,2)
+        del pt_fea, xy_ind
+
+        # fetch range-view feature in origin point order
+        rg_fea_list = []
+        for batch_i in len(cords):
+            rg_fea_list.append(processed_range_fea[batch_i, :, cords[batch_i][:,0], cords[batch_i][:,1] ])
+
+        return unq, processed_pooled_data, rg_fea_list
+
+    def forward(self, batch, is_test=False, before_merge_evaluator=None, after_merge_evaluator=None, require_cluster=True, require_merge=True):
+        valid = batch['pt_valid']
+        if self.is_fix_semantic_instance:
+            with torch.no_grad():
+                coor, feature_3d, rg_fea_list = self.voxelize_fusion(batch)
+                sem_fea, ins_fea = self.backbone(feature_3d, coor, len(batch['grid']))
+                sem_logits = self.sem_head(sem_fea)
+                pred_offsets, ins_fea_list = self.ins_head(ins_fea, batch)
+        else:
+            if self.is_fix_semantic:
+                with torch.no_grad():
+                    coor, feature_3d, rg_fea_list = self.voxelize_fusion(batch)
+                    sem_fea, ins_fea = self.backbone(feature_3d, coor, len(batch['grid']))
+                    sem_logits = self.sem_head(sem_fea)
+            else:
+                coor, feature_3d, rg_fea_list = self.voxelize_fusion(batch)
+                sem_fea, ins_fea = self.backbone(feature_3d, coor, len(batch['grid']))  # [num_voxels, 128] | [480,360,32]
+                sem_logits = self.sem_head(sem_fea)     # [1, num_cls, 480, 360, 32]
+            pred_offsets, ins_fea_list = self.ins_head(ins_fea, batch)  # [N, 3], [N, 32]
+        loss_dict = self.calc_loss(sem_logits, pred_offsets, batch, need_minus_one=False)
+        if is_test:
+            pt_sem_preds = self.calc_sem_label(sem_logits, batch, need_add_one=False)
+            valid = []
+            for i in range(len(batch['grid'])):
+                valid.append(np.isin(pt_sem_preds[i], valid_xentropy_ids).reshape(-1))
+        if self.pytorch_meanshift.data_mode == 'offset':
+            embedding = [offset + torch.from_numpy(xyz).cuda() for offset, xyz in zip(pred_offsets, batch['pt_cart_xyz'])]
+        else:
+            raise NotImplementedError
+        
+        batch['rg_fea_list'] = rg_fea_list
         batch['ins_fea_list'] = ins_fea_list
         pt_ins_ids_preds, meanshift_loss, bandwidth_weight_summary = self.pytorch_meanshift(batch['pt_cart_xyz'], embedding, valid, batch, need_cluster=is_test)
 

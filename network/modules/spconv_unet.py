@@ -341,7 +341,7 @@ class Spconv_salsaNet_res_cfg(nn.Module):
 
         up0e = self.ReconNet(up1e)
 
-        up0e.features = torch.cat((up0e.features, up1e.features), 1)
+        up0e = up0e.replace_feature(torch.cat((up0e.features, up1e.features), 1))
 
         return up0e, up0e
 
@@ -390,11 +390,11 @@ class Spconv_ins_offset_concatxyz_threelayers_head_cfg(nn.Module):
 
     def forward(self, fea, batch):
         fea = self.conv1(fea)
-        fea.features = self.act1(self.bn1(fea.features))
+        fea = fea.replace_feature(self.act1(self.bn1(fea.features)))
         fea = self.conv2(fea)
-        fea.features = self.act2(self.bn2(fea.features))
+        fea = fea.replace_feature(self.act2(self.bn2(fea.features)))
         fea = self.conv3(fea)
-        fea.features = self.act3(self.bn3(fea.features))
+        fea = fea.replace_feature(self.act3(self.bn3(fea.features)))
 
         grid_ind = batch['grid']
         xyz = batch['pt_cart_xyz']
@@ -470,7 +470,7 @@ class Spconv_alsaNet_res(nn.Module):
 
         up0e = self.ReconNet(up1e)
 
-        up0e.features = torch.cat((up0e.features, up1e.features), 1)
+        up0e = up0e.replace_feature(torch.cat((up0e.features, up1e.features), 1))
 
         # up2e = self.upBlock3(up3e, down2b)
         # up1e = self.upBlock4(up2e, down1b)

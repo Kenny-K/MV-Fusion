@@ -147,10 +147,11 @@ def init_dist_pytorch(batch_size, tcp_port, local_rank, backend='nccl'):
     torch.cuda.set_device(local_rank % num_gpus)
     dist.init_process_group(
         backend=backend,
-        init_method='tcp://127.0.0.1:%d' % tcp_port,
+        # init_method='tcp://127.0.0.1:%d' % tcp_port,
         rank=local_rank,
         world_size=num_gpus
     )
+    print("process group set")
     assert batch_size % num_gpus == 0, 'Batch size should be matched with GPUS: (%d, %d)' % (batch_size, num_gpus)
     batch_size_each_gpu = batch_size // num_gpus
     rank = dist.get_rank()

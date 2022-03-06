@@ -4,13 +4,19 @@ from torch.utils.data import DistributedSampler as _DistributedSampler
 
 import os
 
-from .dataset import SemKITTI, spherical_dataset, collate_fn_BEV, collate_fn_BEV_test
+from .dataset import SemKITTI, spherical_dataset, fusion_dataset, collate_fn_BEV, collate_fn_BEV_test, collate_fn_BEV_fusion
 from utils import common_utils
 
 from utils.config import global_args
 
 __all_voxel_dataset__ =  {
-    'Spherical': spherical_dataset
+    'Spherical': spherical_dataset,
+    'Fusion': fusion_dataset
+}
+
+__all_collate_fn__ = {
+    'Spherical': collate_fn_BEV,
+    'Fusion': collate_fn_BEV_fusion
 }
 
 class DistributedSampler(_DistributedSampler):
@@ -37,7 +43,7 @@ class DistributedSampler(_DistributedSampler):
 def build_dataloader(args, cfg, split='train', logger=None, no_shuffle=False, no_aug=False):
     if logger is not None:
         logger.info("Building dataloader for {} set.".format(split))
-    choosen_collate_fn = collate_fn_BEV
+    choosen_collate_fn = __all_collate_fn__[cfg.DATA_CONFIG.DATALOADER.VOXEL_TYPE]
 
     is_training = (split == 'train')
     if cfg.DATA_CONFIG.DATASET_NAME == 'SemanticKitti':

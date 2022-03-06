@@ -14,3 +14,4 @@ lib/pointgroup_ops/build
 lib/Pointnet2/
 *.pth
 scripts/*
+nohup_log

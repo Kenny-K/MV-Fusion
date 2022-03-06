@@ -413,6 +413,252 @@ class spherical_dataset(data.Dataset):
 
         return data_tuple
 
+
+class fusion_dataset(data.Dataset):
+    def __init__(self, in_dataset, grid_size, rotate_aug = False, flip_aug = False,
+               scale_aug =False, transform_aug=False, trans_std=[0.1, 0.1, 0.1],
+               min_rad=-np.pi/4, max_rad=np.pi/4, ignore_label = 255,
+               return_test = False, fixed_volume_space= False,
+               max_volume_space = [50,np.pi,1.5], min_volume_space = [3,-np.pi,-3],
+               center_type='Axis_center', H=64, W=1024, fov_up=3.0, fov_down=-25.0):
+        'Initialization'
+        self.point_cloud_dataset = in_dataset
+        self.grid_size = np.asarray(grid_size)
+        self.rotate_aug = rotate_aug
+        self.flip_aug = flip_aug
+        self.ignore_label = ignore_label
+        self.return_test = return_test
+        self.fixed_volume_space = fixed_volume_space
+        self.max_volume_space = max_volume_space
+        self.min_volume_space = min_volume_space
+
+        self.scale_aug = scale_aug
+        self.transform = transform_aug
+        self.trans_std = trans_std
+        self.noise_rotation = np.random.uniform(min_rad, max_rad)
+
+        assert center_type in ['Axis_center', 'Mass_center']
+        self.center_type = center_type
+
+        self.proj_H = H
+        self.proj_W = W
+        self.proj_fov_up = fov_up
+        self.proj_fov_down = fov_down
+        self.reset()
+
+    def reset(self):
+        """ Reset scan members. """
+        self.points = np.zeros((0, 3), dtype=np.float32)        # [m, 3]: x, y, z
+        self.remissions = np.zeros((0, 1), dtype=np.float32)    # [m ,1]: remission
+
+        # projected range image - [H,W] range (-1 is no data)
+        self.proj_range = np.full((self.proj_H, self.proj_W), -1,
+                                dtype=np.float32)
+
+        # unprojected range (list of depths for each point)
+        self.unproj_range = np.zeros((0, 1), dtype=np.float32)
+
+        # projected point cloud xyz - [H,W,3] xyz coord (-1 is no data)
+        self.proj_xyz = np.full((self.proj_H, self.proj_W, 3), -1,
+                                dtype=np.float32)
+
+        # projected remission - [H,W] intensity (-1 is no data)
+        self.proj_remission = np.full((self.proj_H, self.proj_W), -1,
+                                    dtype=np.float32)
+
+        # projected index (for each pixel, what I am in the pointcloud)
+        # [H,W] index (-1 is no data)
+        self.proj_idx = np.full((self.proj_H, self.proj_W), -1,
+                                dtype=np.int32)
+
+        # for each point, where it is in the range image
+        self.proj_x = np.zeros((0, 1), dtype=np.float32)        # [m, 1]: x
+        self.proj_y = np.zeros((0, 1), dtype=np.float32)        # [m, 1]: y
+
+        # mask containing for each pixel, if it contains a point or not
+        self.proj_mask = np.zeros((self.proj_H, self.proj_W),
+                                dtype=np.int32)       # [H,W] mask
+
+    def __len__(self):
+        'Denotes the total number of samples'
+        return len(self.point_cloud_dataset)
+
+    def do_range_projection(self):
+        """ Project a pointcloud into a spherical projection image.projection.
+            Function takes no arguments because it can be also called externally
+            if the value of the constructor was not set (in case you change your
+            mind about wanting the projection)
+        """
+        # laser parameters
+        fov_up = self.proj_fov_up / 180.0 * np.pi      # field of view up in rad
+        fov_down = self.proj_fov_down / 180.0 * np.pi  # field of view down in rad
+        fov = abs(fov_down) + abs(fov_up)  # get field of view total in rad
+
+        # get depth of all points
+        depth = np.linalg.norm(self.points, 2, axis=1)
+
+        # get scan components
+        scan_x = self.points[:, 0]
+        scan_y = self.points[:, 1]
+        scan_z = self.points[:, 2]
+
+        # get angles of all points
+        yaw = -np.arctan2(scan_y, scan_x)
+        pitch = np.arcsin(scan_z / depth)
+
+        # get projections in image coords
+        proj_x = 0.5 * (yaw / np.pi + 1.0)          # in [0.0, 1.0]
+        proj_y = 1.0 - (pitch + abs(fov_down)) / fov        # in [0.0, 1.0]
+
+        # scale to image size using angular resolution
+        proj_x *= self.proj_W                              # in [0.0, W]
+        proj_y *= self.proj_H                              # in [0.0, H]
+
+        # round and clamp for use as index
+        proj_x = np.floor(proj_x)
+        proj_x = np.minimum(self.proj_W - 1, proj_x)
+        proj_x = np.maximum(0, proj_x).astype(np.int32)   # in [0,W-1]
+        self.proj_x = np.copy(proj_x)  # store a copy in orig order
+
+        proj_y = np.floor(proj_y)
+        proj_y = np.minimum(self.proj_H - 1, proj_y)
+        proj_y = np.maximum(0, proj_y).astype(np.int32)   # in [0,H-1]
+        self.proj_y = np.copy(proj_y)  # stope a copy in original order
+
+        # copy of depth in original order
+        self.unproj_range = np.copy(depth)
+
+        # order in decreasing depth
+        indices = np.arange(depth.shape[0])
+        order = np.argsort(depth)[::-1]
+        depth = depth[order]
+        indices = indices[order]
+        points = self.points[order]
+        remission = self.remissions[order]
+        proj_y = proj_y[order]
+        proj_x = proj_x[order]
+
+        # assing to images
+        self.proj_range[proj_y, proj_x] = depth
+        self.proj_xyz[proj_y, proj_x] = points
+        self.proj_remission[proj_y, proj_x] = remission
+        self.proj_idx[proj_y, proj_x] = indices
+        self.proj_mask = (self.proj_idx > 0).astype(np.float32)
+
+    def __getitem__(self, index):
+        'Generates one sample of data'
+        data = self.point_cloud_dataset[index]
+        if len(data) == 2:
+            xyz,labels = data
+        elif len(data) == 3:
+            xyz,labels,sig = data
+            if len(sig.shape) == 2: sig = np.squeeze(sig)
+        elif len(data) == 6:
+            xyz,labels,sig,ins_labels,valid,pcd_fname = data
+            if len(sig.shape) == 2: sig = np.squeeze(sig)
+        elif len(data) == 7:
+            xyz,labels,sig,ins_labels,valid,pcd_fname,minicluster = data
+            if len(sig.shape) == 2: sig = np.squeeze(sig)
+        else: raise Exception('Return invalid data tuple')
+
+        # random data augmentation by rotation
+        if self.rotate_aug:
+            rotate_rad = np.deg2rad(np.random.random()*360)
+            c, s = np.cos(rotate_rad), np.sin(rotate_rad)
+            j = np.matrix([[c, s], [-s, c]])
+            xyz[:,:2] = np.dot( xyz[:,:2],j)
+
+        # random data augmentation by flip x , y or x+y
+        if self.flip_aug:
+            flip_type = np.random.choice(4,1)
+            if flip_type==1:
+                xyz[:,0] = -xyz[:,0]
+            elif flip_type==2:
+                xyz[:,1] = -xyz[:,1]
+            elif flip_type==3:
+                xyz[:,:2] = -xyz[:,:2]
+
+        if self.scale_aug:
+            noise_scale = np.random.uniform(0.95, 1.05)
+            xyz[:,0] = noise_scale * xyz[:,0]
+            xyz[:,1] = noise_scale * xyz[:,1]
+
+        if self.transform:
+            noise_translate = np.array([np.random.normal(0, self.trans_std[0], 1),
+                                np.random.normal(0, self.trans_std[1], 1),
+                                np.random.normal(0, self.trans_std[2], 1)]).T
+            xyz[:, 0:3] += noise_translate
+
+        # get range view
+        self.points = xyz
+        self.do_range_projection()
+        range_image = np.concatenate([self.proj_range[:, np.newaxis], self.proj_xyz, self.proj_remission[:,np.newaxis]], axis=-1)
+        range_image = np.transpose(range_image, (2,0,1))        # [C, H, W]
+        pt_pix_mapping = np.concatenate([self.proj_y[:, np.newaxis], self.proj_x[:, np.newaxis]], axis=1)
+
+        # convert coordinate into polar coordinates
+        xyz_pol = cart2polar(xyz)
+
+        max_bound_r = np.percentile(xyz_pol[:,0],100,axis = 0)
+        min_bound_r = np.percentile(xyz_pol[:,0],0,axis = 0)
+        max_bound = np.max(xyz_pol[:,1:],axis = 0)
+        min_bound = np.min(xyz_pol[:,1:],axis = 0)
+        max_bound = np.concatenate(([max_bound_r],max_bound))
+        min_bound = np.concatenate(([min_bound_r],min_bound))
+        if self.fixed_volume_space:
+            max_bound = np.asarray(self.max_volume_space)
+            min_bound = np.asarray(self.min_volume_space)
+
+        # get grid index
+        crop_range = max_bound - min_bound
+        cur_grid_size = self.grid_size
+        intervals = crop_range/(cur_grid_size-1) # (size-1) could directly get index starting from 0, very convenient
+
+        if (intervals==0).any(): print("Zero interval!")
+        grid_ind = (np.floor((np.clip(xyz_pol,min_bound,max_bound)-min_bound)/intervals)).astype(np.int) # point-wise grid index
+
+        # process voxel position
+        voxel_position = np.zeros(self.grid_size,dtype = np.float32)
+        dim_array = np.ones(len(self.grid_size)+1,int)
+        dim_array[0] = -1
+        voxel_position = np.indices(self.grid_size)*intervals.reshape(dim_array) + min_bound.reshape(dim_array)
+        voxel_position = polar2cat(voxel_position)
+
+        # process labels
+        processed_label = np.ones(self.grid_size,dtype = np.uint8)*self.ignore_label
+        label_voxel_pair = np.concatenate([grid_ind,labels],axis = 1)
+        label_voxel_pair = label_voxel_pair[np.lexsort((grid_ind[:,0],grid_ind[:,1],grid_ind[:,2])),:]
+        processed_label = nb_process_label(np.copy(processed_label),label_voxel_pair)
+        data_tuple = (voxel_position,processed_label)
+
+        # center data on each voxel for PTnet
+        voxel_centers = (grid_ind.astype(np.float32) + 0.5)*intervals + min_bound
+        return_xyz = xyz_pol - voxel_centers #TODO: calculate relative coordinate using polar system?
+        return_xyz = np.concatenate((return_xyz,xyz_pol,xyz[:,:2]),axis = 1)
+
+        if len(data) == 2:
+            return_fea = return_xyz
+        elif len(data) >= 3:
+            return_fea = np.concatenate((return_xyz,sig[...,np.newaxis]),axis = 1)
+
+        if self.return_test:
+            data_tuple += (grid_ind,labels,return_fea,index)
+        else:
+            data_tuple += (grid_ind,labels,return_fea) # (grid-wise coor, grid-wise sem label, point-wise grid index, point-wise sem label, [relative polar coor(3), polar coor(3), cat coor(2), ref signal(1)])
+
+        if len(data) == 6:
+            offsets = np.zeros([xyz.shape[0], 3], dtype=np.float32)
+            offsets = nb_aggregate_pointwise_center_offset(offsets, xyz, ins_labels, self.center_type)
+            data_tuple += (ins_labels, offsets, valid, xyz, range_image, pt_pix_mapping, pcd_fname) # plus (point-wise instance label, point-wise center offset)
+
+        if len(data) == 7:
+            offsets = np.zeros([xyz.shape[0], 3], dtype=np.float32)
+            offsets = nb_aggregate_pointwise_center_offset(offsets, xyz, ins_labels, self.center_type)
+            data_tuple += (ins_labels, offsets, valid, xyz, pcd_fname, minicluster) # plus (point-wise instance label, point-wise center offset)
+
+        return data_tuple
+
+
 def calc_xyz_middle(xyz):
     return np.array([
         (np.max(xyz[:, 0]) + np.min(xyz[:, 0])) / 2.0,
@@ -483,6 +729,36 @@ def collate_fn_BEV(data): # stack alone batch dimension
         'pt_valid': pt_valid,
         'pt_cart_xyz': pt_cart_xyz,
         'pcd_fname': [d[9] for d in data]
+    }
+
+def collate_fn_BEV_fusion(data):
+    data2stack=np.stack([d[0] for d in data]).astype(np.float32) # grid-wise coor
+    label2stack=np.stack([d[1] for d in data])                   # grid-wise sem label
+    grid_ind_stack = [d[2] for d in data]                        # point-wise grid index
+    point_label = [d[3] for d in data]                           # point-wise sem label
+    xyz = [d[4] for d in data]                                   # point-wise coor
+
+    pt_ins_labels = [d[5] for d in data]                         # point-wise instance label
+    pt_offsets = [d[6] for d in data]                            # point-wise center offset
+    pt_valid = [d[7] for d in data]                              # point-wise indicator for foreground points
+    pt_cart_xyz = [d[8] for d in data]                           # point-wise cart coor
+    
+    range_image = np.stack([d[9] for d in data], axis=0)
+    pt_pix_mapping = [d[10] for d in data]
+
+    return {
+        'vox_coor': torch.from_numpy(data2stack),
+        'vox_label': torch.from_numpy(label2stack),
+        'grid': grid_ind_stack,
+        'pt_labs': point_label,
+        'pt_fea': xyz,
+        'pt_ins_labels': pt_ins_labels,
+        'pt_offsets': pt_offsets,
+        'pt_valid': pt_valid,
+        'pt_cart_xyz': pt_cart_xyz,
+        'range_image': range_image,
+        'pt_pix_mapping': pt_pix_mapping,
+        'pcd_fname': [d[11] for d in data]
     }
 
 def collate_fn_BEV_test(data):

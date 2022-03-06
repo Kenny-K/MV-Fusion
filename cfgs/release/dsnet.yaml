@@ -24,10 +24,10 @@ DATA_CONFIG:
 
 OPTIMIZE:
     LR: 0.002
-    MAX_EPOCH: 50
+    MAX_EPOCH: 40
 
 MODEL:
-    NAME: PolarOffsetSpconvPytorchMeanshift
+    NAME: PolarOffsetSpconvPytorchMeanshift #PolarOffsetSpconv 
     MODEL_FN:
         PT_POOLING: max
         MAX_PT_PER_ENCODE: 256
@@ -51,7 +51,7 @@ MODEL:
         DATA_MODE: offset
         SHIFT_MODE: matrix_flat_kernel_bandwidth_weight
         DOWNSAMPLE_MODE: xyz
-        POINT_NUM_TH: 10000
+        POINT_NUM_TH: 8000
     SEM_LOSS: Lovasz_loss
     INS_LOSS: offset_loss_regress_vec
     POST_PROCESSING:

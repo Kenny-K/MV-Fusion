@@ -1,8 +1,9 @@
-from .model_zoo import PolarOffsetSpconv, PolarOffsetSpconvPytorchMeanshift
+from .model_zoo import PolarOffsetSpconv, PolarOffsetSpconvPytorchMeanshift, PolarOffsetSpconvPytorchFusion
 
 __all__ = {
     'PolarOffsetSpconv': PolarOffsetSpconv,
     'PolarOffsetSpconvPytorchMeanshift': PolarOffsetSpconvPytorchMeanshift,
+    'PolarOffsetSpconvPytorchFusion': PolarOffsetSpconvPytorchFusion,
 }
 
 def build_network(cfg):
