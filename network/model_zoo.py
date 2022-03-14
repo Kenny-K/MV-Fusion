@@ -513,10 +513,18 @@ class PolarOffsetSpconvPytorchMeanshift(PolarOffsetSpconv):
 
 class PolarOffsetSpconvPytorchFusion(PolarOffsetSpconv):
     def __init__(self, cfg):
-        super(PolarOffsetSpconvPytorchMeanshift, self).__init__(cfg)
-        self.pytorch_meanshift = pytorch_meanshift.PytorchMeanshift(cfg, self.ins_loss, self.cluster_fn)
+        super(PolarOffsetSpconvPytorchFusion, self).__init__(cfg)
+        self.pytorch_meanshift = pytorch_meanshift.PytorchMeanshiftFusion(cfg, self.ins_loss, self.cluster_fn)
         self.range_branch = RangeNet.RangeNet(cfg)
         self.is_fix_semantic_instance = False
+
+        if self.fea_compre is not None:
+            # overload compression for concat feature
+            self.fea_compression = nn.Sequential(
+                nn.Linear(2 * self.pool_dim, self.fea_compre),
+                nn.ReLU()
+            ).cuda()
+            self.pt_fea_dim = self.fea_compre
 
     def fix_semantic_instance_parameters(self):
         fix_list = [self.backbone, self.sem_head, self.vfe_model, self.fea_compression, self.ins_head]
@@ -622,8 +630,8 @@ class PolarOffsetSpconvPytorchFusion(PolarOffsetSpconv):
 
         # fetch range-view feature in origin point order
         rg_fea_list = []
-        for batch_i in len(cords):
-            rg_fea_list.append(processed_range_fea[batch_i, :, cords[batch_i][:,0], cords[batch_i][:,1] ])
+        for batch_i in range(len(cords)):
+            rg_fea_list.append( processed_range_fea[batch_i, :, cords[batch_i][:,0], cords[batch_i][:,1]].transpose(0,1) )
 
         return unq, processed_pooled_data, rg_fea_list
 

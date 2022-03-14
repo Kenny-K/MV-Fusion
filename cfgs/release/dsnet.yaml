@@ -5,7 +5,7 @@ DATA_CONFIG:
     RETURN_REF: True
     RETURN_INS_ID: True
     DATALOADER:
-        VOXEL_TYPE: Spherical
+        VOXEL_TYPE: Spherical  #Spherical
         GRID_SIZE: [480, 360, 32]
         AUGMENTATION:
             ROTATE: True
@@ -51,7 +51,7 @@ MODEL:
         DATA_MODE: offset
         SHIFT_MODE: matrix_flat_kernel_bandwidth_weight
         DOWNSAMPLE_MODE: xyz
-        POINT_NUM_TH: 8000
+        POINT_NUM_TH: 10000
     SEM_LOSS: Lovasz_loss
     INS_LOSS: offset_loss_regress_vec
     POST_PROCESSING:

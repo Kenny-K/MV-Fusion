@@ -591,8 +591,9 @@ class fusion_dataset(data.Dataset):
 
         # get range view
         self.points = xyz
+        self.remissions = sig
         self.do_range_projection()
-        range_image = np.concatenate([self.proj_range[:, np.newaxis], self.proj_xyz, self.proj_remission[:,np.newaxis]], axis=-1)
+        range_image = np.concatenate([self.proj_range[:,:, np.newaxis], self.proj_xyz, self.proj_remission[:,:,np.newaxis]], axis=-1)
         range_image = np.transpose(range_image, (2,0,1))        # [C, H, W]
         pt_pix_mapping = np.concatenate([self.proj_y[:, np.newaxis], self.proj_x[:, np.newaxis]], axis=1)
 

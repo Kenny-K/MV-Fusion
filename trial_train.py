@@ -140,7 +140,7 @@ def PolarOffsetMain(args, cfg):
     model.train()  # before wrap to DistributedDataParallel to support fixed some parameters
     if dist_train:
         model = nn.parallel.DistributedDataParallel(model, device_ids=[cfg.LOCAL_RANK % torch.cuda.device_count()], find_unused_parameters=True)
-    logger.info(model)
+    # logger.info(model)
 
     if cfg.LOCAL_RANK==0:
         writer = SummaryWriter(log_dir=summary_dir)
@@ -183,7 +183,7 @@ def PolarOffsetMain(args, cfg):
             vbar = tqdm(total=len(val_dataset_loader), dynamic_ncols=True)
         for i_iter, inputs in enumerate(val_dataset_loader):
             inputs['i_iter'] = i_iter
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
             with torch.no_grad():
                 ret_dict = model(inputs, is_test=True, before_merge_evaluator=before_merge_evaluator,
                                 after_merge_evaluator=after_merge_evaluator, require_cluster=True)
@@ -221,10 +221,10 @@ def PolarOffsetMain(args, cfg):
         ### train one epoch
         logger.info('----EPOCH {} Training----'.format(epoch))
         loss_acc = 0
-        if rank == 0:
-            pbar = tqdm(total=len(train_dataset_loader), dynamic_ncols=True)
+        # if rank == 0:
+        #     pbar = tqdm(total=len(train_dataset_loader), dynamic_ncols=True)
         for i_iter, inputs in enumerate(train_dataset_loader):
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
             torch.autograd.set_detect_anomaly(True)
             model.train()
             optimizer.zero_grad()
@@ -244,15 +244,15 @@ def PolarOffsetMain(args, cfg):
             loss.backward()
             optimizer.step()
 
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
             if rank == 0:
                 try:
                     cur_lr = float(optimizer.lr)
                 except:
                     cur_lr = optimizer.param_groups[0]['lr']
                 loss_acc += loss.item()
-                pbar.set_postfix({'loss': loss.item(), 'lr': cur_lr, 'mean_loss': loss_acc / float(i_iter+1)})
-                pbar.update(1)
+                # pbar.set_postfix({'loss': loss.item(), 'lr': cur_lr, 'mean_loss': loss_acc / float(i_iter+1)})
+                # pbar.update(1)
                 writer.add_scalar('Train/01_Loss', ret_dict['loss'].item(), global_iter)
                 writer.add_scalar('Train/02_SemLoss', ret_dict['sem_loss'].item(), global_iter)
                 if sum(ret_dict['offset_loss_list']).item() > 0:
@@ -272,8 +272,8 @@ def PolarOffsetMain(args, cfg):
                     ki += writer_acc
                     writer.add_scalar('Train/{}_{}'.format(str(ki).zfill(2), k), ret_dict[k], global_iter)
                 global_iter += 1
-        if rank == 0:
-            pbar.close()
+        # if rank == 0:
+        #     pbar.close()
         
         ### evaluate after each epoch
         logger.info('----EPOCH {} Evaluating----'.format(epoch))
@@ -284,7 +284,7 @@ def PolarOffsetMain(args, cfg):
         if rank == 0:
             vbar = tqdm(total=len(val_dataset_loader), dynamic_ncols=True)
         for i_iter, inputs in enumerate(val_dataset_loader):
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
             inputs['i_iter'] = i_iter
             inputs['rank'] = rank
             with torch.no_grad():

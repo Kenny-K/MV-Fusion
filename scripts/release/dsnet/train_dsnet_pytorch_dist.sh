@@ -18,4 +18,5 @@ tag=train_noDS_pytorch_dist
 #     --tag ${tag} \
 #     --launcher pytorch \
 
+export CUDA_VISIBLE_DEVICES=0
 python trial_train.py --batch_size 1 --config cfgs/release/dsnet.yaml --tag train_dsnet_pytorch

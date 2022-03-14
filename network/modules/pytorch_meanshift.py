@@ -219,7 +219,7 @@ class PytorchMeanshift(nn.Module):
 
 class PytorchMeanshiftFusion(nn.Module):
     def __init__(self, cfg, loss_fn, cluster_fn):
-        super(PytorchMeanshift, self).__init__()
+        super(PytorchMeanshiftFusion, self).__init__()
         self.bandwidth = cfg.MODEL.MEANSHIFT.BANDWIDTH
         self.iteration = cfg.MODEL.MEANSHIFT.ITERATION
         self.data_mode = cfg.MODEL.MEANSHIFT.DATA_MODE
@@ -229,8 +229,16 @@ class PytorchMeanshiftFusion(nn.Module):
         self.init_size = cfg.MODEL.BACKBONE.INIT_SIZE
 
         # attention-fusion module
+        self.ff_dim = 256
         self.query_projection = nn.Linear(cfg.MODEL.VFE.OUT_CHANNEL, self.init_size)
         # self.key_projection = nn.Linear(cfg.MODEL.VFE.OUT_CHANNEL, self.init_size)
+
+        self.norm = nn.LayerNorm(self.init_size)
+        self.feed_forward = nn.Sequential(
+            nn.Linear(self.init_size, self.ff_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(self.ff_dim, self.init_size))
 
         self.meanshift_loss = None
         if 'MEANSHIFT_LOSS' in cfg.MODEL.MEANSHIFT:
@@ -383,13 +391,29 @@ class PytorchMeanshiftFusion(nn.Module):
             if self.shift_mode in ['matrix_flat_kernel_bandwidth_weight']:
                 rg_fea = rg_fea_list[batch_i]
                 ins_fea = ins_fea_list[batch_i]
-                assert rg_fea.shape[0] == ins_fea.shape[0], print(rg_fea.shape[0], ins_fea.shape[0])
-                fg_rg_fea = rg_fea[valid_[batch_i]][index_[batch_i]]        # [N', C]
-                fg_X_fea = ins_fea[valid_[batch_i]][index_[batch_i]]
+
+                assert rg_fea.shape[0] == ins_fea.shape[0], print(rg_fea.shape, ins_fea.shape)
+                if index_[batch_i] is None:
+                    fg_rg_fea = rg_fea[valid_[batch_i]]     # [N', C]
+                    fg_X_fea = ins_fea[valid_[batch_i]]
+                else:
+                    fg_rg_fea = rg_fea[valid_[batch_i]][index_[batch_i]]        # [N', C]
+                    fg_X_fea = ins_fea[valid_[batch_i]][index_[batch_i]]
                 query_key = self.query_projection(fg_rg_fea)
+                if query_key.shape[0] <= 10:
+                    print('Handling a frame with {} foreground point'.format(query_key.shape[0]))
+
+                assert len(query_key.shape) == 2, print('All points feature with shape\n',
+                                                    rg_fea.shape,
+                                                    ins_fea.shape,
+                                                    '\nForeground points feature with shape\n',
+                                                    fg_rg_fea.shape,
+                                                    fg_X_fea.shape,
+                                                    '\nPoint Cartesian Coordinates shape\n',
+                                                    X.shape)
                 weight = torch.softmax(torch.matmul(query_key, query_key.transpose(0,1)) / math.sqrt(query_key.shape[1]) , dim=1)
-                X_fea = self.dropout(self.norm(fg_X_fea + torch.matmul(weight, fg_X_fea)))
-                X_fea = self.dropout(self.norm(X_fea + self.feed_forward(X_fea)))
+                X_fea = self.norm(fg_X_fea + torch.matmul(weight, fg_X_fea))
+                X_fea = self.norm(X_fea + self.feed_forward(X_fea))
                 
                 # X_fea = ins_fea[valid_[batch_i]][index_[batch_i]].reshape(-1, self.init_size)
             for iter_i in range(self.iteration):
