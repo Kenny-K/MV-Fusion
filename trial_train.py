@@ -83,7 +83,7 @@ def PolarOffsetMain(args, cfg):
 
     ### create dataloader
     if (not args.onlytest) and (not args.onlyval):
-        train_dataset_loader = build_dataloader(args, cfg, split='train', logger=logger)
+        train_dataset_loader = build_dataloader(args, cfg, split='train', logger=logger, no_shuffle=True)
         val_dataset_loader = build_dataloader(args, cfg, split='val', logger=logger, no_shuffle=True, no_aug=True)
     elif args.onlyval:
         val_dataset_loader = build_dataloader(args, cfg, split='val', logger=logger, no_shuffle=True, no_aug=True)

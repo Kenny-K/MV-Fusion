@@ -1,5 +1,117 @@
 import torch
 import torch.nn as nn
+import numpy as np
+from torch import Tensor
+from torch_geometric.nn.conv import MessagePassing
+from torch_geometric.typing import PairTensor
+from torch_geometric.utils import softmax
+
+
+class RangeConv(MessagePassing):
+    '''
+    Pixel-dependent Range-weighted convolution
+    Y_(i+m)(j+n) = X_(i+m)(j+n) * K_mn * (D_ij-D_(i+m)(j+n))^-1
+    '''
+    def __init__(self, 
+              aggr = "add", 
+              flow: str = "source_to_target", 
+              node_dim: int = 0,
+              kernel_size = 3,
+              H = 64,
+              W = 1024
+              ):
+        super().__init__(aggr, flow, node_dim)
+        if isinstance(kernel_size, int):
+          self.kernel_size = [kernel_size, kernel_size]
+        else:
+          self.kernel_size = kernel_size
+
+        self.H = H
+        self.W = W
+        self.edge_index, self.local_index, self.center_index, self.vec_edge_index = self.prepare_range_conv(H,W,kernel_size)
+
+        self.kernel = nn.parameter.Parameter(torch.randn(self.kernel_size[0],self.kernel_size[1]), requires_grad=True)
+
+    def prepare_range_conv(self, H, W, kernel_size):
+        '''
+            depth_image := 1 x H x W (pooled)
+
+            output:
+
+        '''
+        grid = np.indices((H,W)).reshape(2,H*W)
+        edge_block = np.concatenate((np.expand_dims(np.arange(H*W),axis=0), grid), axis=0)  # [3, H*W] (pix_index, h, w)
+        edge_index = []
+        local_block = np.zeros(shape=(2,H*W), dtype=np.int32)
+        local_index = []
+        h,w = kernel_size // 2, kernel_size // 2
+        for step_h in range(-h,h+1):
+            for step_w in range(-w,w+1):
+                temp = np.copy(edge_block)
+                local_temp = np.copy(local_block)
+                if step_h != 0:
+                    temp[1,:] += step_h
+                    local_temp[0,:] += step_h
+                if step_w != 0:
+                    temp[2,:] += step_w
+                    local_temp[1,:] += step_w
+                edge_index.append(temp)
+                local_index.append(local_temp)
+        grid = torch.from_numpy(grid)
+        edge_index = torch.from_numpy(np.concatenate(edge_index,axis=1))
+        local_index = torch.from_numpy(np.concatenate(local_index,axis=1))
+
+        # mask out index out of range
+        mask_lb = edge_index[1,:] >= 0
+        edge_index = edge_index[:,mask_lb]
+        local_index = local_index[:,mask_lb]
+        mask_ub = edge_index[1,:] <= H-1
+        edge_index = edge_index[:,mask_ub]
+        local_index = local_index[:,mask_ub]
+
+        mask_lb = edge_index[2,:] >= 0
+        edge_index = edge_index[:,mask_lb]
+        local_index = local_index[:,mask_lb]
+        mask_ub = edge_index[2,:] <= W-1
+        edge_index = edge_index[:,mask_ub]
+        local_index = local_index[:,mask_ub]
+
+        # vectorize center pixel index 
+        center_idx = grid[:,edge_index[0,:]]
+        # vectorize edge index: reshape edges from (pix_index, h, w) to (vectorized, pix_index), but still [3,N] to [2,N]
+        vec_edge_index = torch.zeros(2, edge_index.shape[1])
+        vec_edge_index[0,:] = self.W * edge_index[1,:] + edge_index[2,:]
+        vec_edge_index[1,:] = edge_index[0,:]
+       
+        return edge_index.long().cuda(), local_index.long().cuda(), center_idx.long().cuda(), vec_edge_index.long().cuda()
+
+
+    def forward(self, x, pooled_depth_image):
+        '''
+          x := vectorized range_image  pix_num x C ?
+          depth_image := 1 x H x W
+          self.edge_index = 3 x E   (pix_index, h, w)
+          self.center_index = 2 x E (h, w)
+          self.local_index = 2 X E  
+        '''
+        if isinstance(x, Tensor):
+            x: PairTensor = (x, x)
+        
+        depth_image = pooled_depth_image
+        weights = 1 / torch.abs(depth_image[self.center_index[0,:],self.center_index[1,:]] - depth_image[self.edge_index[1,:], self.edge_index[2,:]] + 1e-15) # TODO: (E, )
+
+        # x should be [num_nodes, num_nodes_features]
+        # edge_index should be [2, num_edges] torch.longs
+        # weights should be [num_edges, num_features]
+        return self.propagate(edge_index=self.vec_edge_index, x=x, weights=weights) # TODO: x.shape = [N, C] weights.shape = [E,C] compatible with pytorch_geometric?
+
+    def message(self, x_j: Tensor, weights: Tensor, index) -> Tensor:
+        # TODO: check the local index on the convolution kernel
+        h, w = self.kernel_size[0] // 2, self.kernel_size[1] // 2
+        # reshape for scalar broadcast
+        out = x_j * softmax(weights,index).reshape(-1,1) * self.kernel[h + self.local_index[0, :], w + self.local_index[1, :]].reshape(-1,1)  
+        return out
+
 
 class CAM(nn.Module):
     def __init__(self, inplanes, bn_d=0.1):
@@ -128,12 +240,43 @@ class RangeNet(nn.Module):
                                 stride=self.strides[3])
 
         self.FC = nn.Conv2d(64,self.out_dim,kernel_size=1)
+
+        self.image_pool = nn.Sequential(
+                            nn.AvgPool2d(kernel_size=(1,3), stride=(1,2), padding=(0,1), count_include_pad=False),
+                            nn.AvgPool2d(kernel_size=3, stride=(1,2), padding=1, count_include_pad=False),
+                            nn.AvgPool2d(kernel_size=(1,3), stride=(1,2), padding=(0,1), count_include_pad=False),
+                            nn.AvgPool2d(kernel_size=3, stride=(1,2), padding=1, count_include_pad=False)
+        )       # TODO:  Vertical Pooling ?
+        
+
+        self.range_convolution = RangeConv(H=64,W=64)
+
+    def batch_range_conv(self, batch_fea, batch_depth_image):
+        '''
+            batch_fea := [bs, C, H, W]
+            batch_depth_image := [bs, H, W] ?
+            return:
+              conv_batch_fea := [bs, C, H, W]
+        '''
+        assert len(batch_fea.shape) == 4, print(batch_fea.shape)
+        batch_size = batch_fea.shape[0]
+        fea_channel = batch_fea.shape[1]
+        h, w = batch_fea.shape[2], batch_fea.shape[3]
+        conv_fea_list = []
+        for batch_i in range(batch_size):
+            vec_img = batch_fea[batch_i].permute(1,2,0).reshape(h*w,fea_channel)    #[C, H, W] => [H*W, C]
+            conv_fea = self.range_convolution(vec_img, batch_depth_image[batch_i])
+            conv_fea = conv_fea.reshape(h,w,-1).permute(2,0,1)
+            conv_fea_list.append(conv_fea[None,:])      # expand dim as [1, C, H, W]
+
+        return torch.cat(conv_fea_list,dim=0)
     
     def forward(self, x):
         # TODO: skip with detach? maybe not
         # Convolutional Encoder
+        depth_image = x[:,0,:,:]
         skip_1 = self.conv1b(x).detach()    # b x 64 x 64 x 1024
-        skip_2 = self.conv1a(x)                  # b x 64 x 64 x 512
+        skip_2 = self.conv1a(x)             # b x 64 x 64 x 512
 
         skip_3 = self.conv2(skip_2)
         skip_2 = skip_2.detach()
@@ -144,6 +287,10 @@ class RangeNet(nn.Module):
         code = self.conv4(skip_4)
         skip_4 = skip_4.detach()
 
+        # batch-wise range convolution
+        pooled_depth_image = self.image_pool(depth_image)
+        code = self.batch_range_conv(code, pooled_depth_image)
+
         # Convolutional Decoder
         out = self.upconv1(code) + skip_4
         out = self.upconv2(out) + skip_3
@@ -153,3 +300,4 @@ class RangeNet(nn.Module):
         out = self.FC(out)
 
         return out
+
