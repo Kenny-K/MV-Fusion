@@ -9,7 +9,7 @@ from torch_geometric.utils import softmax
 
 class RangeConv(MessagePassing):
     '''
-    Pixel-dependent Range-weighted convolution
+    Pixel-wise Range-weighted convolution
     Y_(i+m)(j+n) = X_(i+m)(j+n) * K_mn * (D_ij-D_(i+m)(j+n))^-1
     '''
     def __init__(self, 
@@ -37,7 +37,7 @@ class RangeConv(MessagePassing):
             depth_image := 1 x H x W (pooled)
 
             output:
-
+                range_feature := 1 x H x W
         '''
         grid = np.indices((H,W)).reshape(2,H*W)
         edge_block = np.concatenate((np.expand_dims(np.arange(H*W),axis=0), grid), axis=0)  # [3, H*W] (pix_index, h, w)
@@ -103,7 +103,7 @@ class RangeConv(MessagePassing):
         # x should be [num_nodes, num_nodes_features]
         # edge_index should be [2, num_edges] torch.longs
         # weights should be [num_edges, num_features]
-        return self.propagate(edge_index=self.vec_edge_index, x=x, weights=weights) # TODO: x.shape = [N, C] weights.shape = [E,C] compatible with pytorch_geometric?
+        return self.propagate(edge_index=self.vec_edge_index, x=x, weights=weights)
 
     def message(self, x_j: Tensor, weights: Tensor, index) -> Tensor:
         # TODO: check the local index on the convolution kernel
@@ -241,40 +241,44 @@ class RangeNet(nn.Module):
 
         self.FC = nn.Conv2d(64,self.out_dim,kernel_size=1)
 
-        self.image_pool = nn.Sequential(
-                            nn.AvgPool2d(kernel_size=(1,3), stride=(1,2), padding=(0,1), count_include_pad=False),
-                            nn.AvgPool2d(kernel_size=3, stride=(1,2), padding=1, count_include_pad=False),
-                            nn.AvgPool2d(kernel_size=(1,3), stride=(1,2), padding=(0,1), count_include_pad=False),
-                            nn.AvgPool2d(kernel_size=3, stride=(1,2), padding=1, count_include_pad=False)
-        )       # TODO:  Vertical Pooling ?
-        
+        self.use_range_convolution = cfg.MODEL.RANGE.RANGE_CONV
 
-        self.range_convolution = RangeConv(H=64,W=64)
+        if self.use_range_convolution:
+            # Compress the depth image(64x1024->64x64) by average pooling to fit the size of innermost layer of RangeNet
+            self.image_pool = nn.Sequential(
+                                nn.AvgPool2d(kernel_size=(1,3), stride=(1,2), padding=(0,1), count_include_pad=False),
+                                nn.AvgPool2d(kernel_size=3, stride=(1,2), padding=1, count_include_pad=False),
+                                nn.AvgPool2d(kernel_size=(1,3), stride=(1,2), padding=(0,1), count_include_pad=False),
+                                nn.AvgPool2d(kernel_size=3, stride=(1,2), padding=1, count_include_pad=False)
+            )       # TODO:  Vertical Pooling ?
+            
+            self.range_convolution = RangeConv(H=64,W=64)
 
     def batch_range_conv(self, batch_fea, batch_depth_image):
         '''
             batch_fea := [bs, C, H, W]
-            batch_depth_image := [bs, H, W] ?
+            batch_depth_image := [bs, H, W]
             return:
               conv_batch_fea := [bs, C, H, W]
         '''
-        assert len(batch_fea.shape) == 4, print(batch_fea.shape)
-        batch_size = batch_fea.shape[0]
-        fea_channel = batch_fea.shape[1]
-        h, w = batch_fea.shape[2], batch_fea.shape[3]
-        conv_fea_list = []
-        for batch_i in range(batch_size):
-            vec_img = batch_fea[batch_i].permute(1,2,0).reshape(h*w,fea_channel)    #[C, H, W] => [H*W, C]
-            conv_fea = self.range_convolution(vec_img, batch_depth_image[batch_i])
-            conv_fea = conv_fea.reshape(h,w,-1).permute(2,0,1)
-            conv_fea_list.append(conv_fea[None,:])      # expand dim as [1, C, H, W]
+        if self.use_range_convolution:
+            assert len(batch_fea.shape) == 4, print(batch_fea.shape)
+            batch_size = batch_fea.shape[0]
+            fea_channel = batch_fea.shape[1]
+            h, w = batch_fea.shape[2], batch_fea.shape[3]
+            conv_fea_list = []
+            for batch_i in range(batch_size):
+                vec_img = batch_fea[batch_i].permute(1,2,0).reshape(h*w,fea_channel)    #[C, H, W] => [H*W, C]
+                conv_fea = self.range_convolution(vec_img, batch_depth_image[batch_i])
+                conv_fea = conv_fea.reshape(h,w,-1).permute(2,0,1)
+                conv_fea_list.append(conv_fea[None,:])      # expand dim as [1, C, H, W]
 
-        return torch.cat(conv_fea_list,dim=0)
+            return torch.cat(conv_fea_list,dim=0)
+        else:
+            return None
     
     def forward(self, x):
-        # TODO: skip with detach? maybe not
         # Convolutional Encoder
-        depth_image = x[:,0,:,:]
         skip_1 = self.conv1b(x).detach()    # b x 64 x 64 x 1024
         skip_2 = self.conv1a(x)             # b x 64 x 64 x 512
 
@@ -288,8 +292,10 @@ class RangeNet(nn.Module):
         skip_4 = skip_4.detach()
 
         # batch-wise range convolution
-        pooled_depth_image = self.image_pool(depth_image)
-        code = self.batch_range_conv(code, pooled_depth_image)
+        if self.use_range_convolution:
+            depth_image = x[:,0,:,:]
+            pooled_depth_image = self.image_pool(depth_image)
+            code = self.batch_range_conv(code, pooled_depth_image)
 
         # Convolutional Decoder
         out = self.upconv1(code) + skip_4

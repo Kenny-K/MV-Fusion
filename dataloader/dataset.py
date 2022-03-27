@@ -87,7 +87,7 @@ class SemKITTI(data.Dataset):
         if self.return_ins:
             data_tuple += (ins_labels, valid)
         data_tuple += (self.im_idx[index],)
-        return data_tuple
+        return data_tuple   # ( x y z sem_label ref ins_label valid im_index ) length: 8
 
     def count_ins(self):
         pbar = tqdm(total=len(self.im_idx), dynamic_ncols=True)

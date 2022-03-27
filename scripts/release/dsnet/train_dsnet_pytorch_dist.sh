@@ -10,13 +10,18 @@ tag=train_dsnet_pytorch_fusion_rangeconv_dist
 #     --launcher pytorch \
 #     --fix_semantic_instance
 
-export CUDA_VISIBLE_DEVICES=2,3
-torchrun --nproc_per_node=${ngpu} trial_train.py \
-    --tcp_port 2345 \
-    --batch_size ${ngpu} \
-    --config cfgs/release/fusion.yaml \
-    --tag ${tag} \
-    --launcher pytorch \
+# export CUDA_VISIBLE_DEVICES=2,3
+# torchrun --nproc_per_node=${ngpu} trial_train.py \
+#     --tcp_port 2345 \
+#     --batch_size ${ngpu} \
+#     --config cfgs/release/fusion.yaml \
+#     --tag ${tag} \
+    # --launcher pytorch \
+# export LD_LIBRARY_PATH='usr/local/cuda/lib64:/usr/local/cuda-11.4/lib64'
 
+export CUDA_VISIBLE_DEVICES=1
+python trial_train.py --batch_size 1 --config cfgs/release/mininet.yaml\
+             --tag testing \
+             --pretrained_ckpt pretrained_weight/pretrained_fusion.pth\
+             --nofix
 
-# python trial_train.py --batch_size 1 --config cfgs/release/fusion.yaml --tag train_dsnet_pytorch_fusion_rangeconv

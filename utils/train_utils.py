@@ -52,6 +52,18 @@ def load_pretrained_model(model, filename, to_cpu=False, logger=None):
             continue
         if model.state_dict()[match_key].shape == checkpoint[key].shape:
             update_model_state[match_key] = val
+        elif val.shape > model.state_dict()[match_key].shape:
+            if match_key.split('.')[0] in ['backbone', 'sem_head', 'ins_head', 'pytorch_meanshift']:
+                if len(val.shape) == 1:
+                    new_channel = model.state_dict()[match_key].shape[0]
+                    update_model_state[match_key] = val[:new_channel]
+                elif len(val.shape) == 5:
+                    new_channel_1 = model.state_dict()[match_key].shape[0]
+                    new_channel_2 = model.state_dict()[match_key].shape[4]
+                    update_model_state[match_key] = val[:new_channel_1,:,:,:,:new_channel_2]
+                else:
+                    print(key, val.shape, model.state_dict()[match_key].shape)
+
 
     state_dict = model.state_dict()
     state_dict.update(update_model_state)

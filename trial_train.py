@@ -83,7 +83,7 @@ def PolarOffsetMain(args, cfg):
 
     ### create dataloader
     if (not args.onlytest) and (not args.onlyval):
-        train_dataset_loader = build_dataloader(args, cfg, split='train', logger=logger, no_shuffle=True)
+        train_dataset_loader = build_dataloader(args, cfg, split='train', logger=logger)
         val_dataset_loader = build_dataloader(args, cfg, split='val', logger=logger, no_shuffle=True, no_aug=True)
     elif args.onlyval:
         val_dataset_loader = build_dataloader(args, cfg, split='val', logger=logger, no_shuffle=True, no_aug=True)
@@ -221,10 +221,11 @@ def PolarOffsetMain(args, cfg):
         ### train one epoch
         logger.info('----EPOCH {} Training----'.format(epoch))
         loss_acc = 0
-        # if rank == 0:
-        #     pbar = tqdm(total=len(train_dataset_loader), dynamic_ncols=True)
+        if rank == 0:
+            pbar = tqdm(total=len(train_dataset_loader), dynamic_ncols=True)
         for i_iter, inputs in enumerate(train_dataset_loader):
-            # torch.cuda.empty_cache()
+            if i_iter % 3000 == 0:
+                torch.cuda.empty_cache()
             torch.autograd.set_detect_anomaly(True)
             model.train()
             optimizer.zero_grad()
@@ -251,8 +252,8 @@ def PolarOffsetMain(args, cfg):
                 except:
                     cur_lr = optimizer.param_groups[0]['lr']
                 loss_acc += loss.item()
-                # pbar.set_postfix({'loss': loss.item(), 'lr': cur_lr, 'mean_loss': loss_acc / float(i_iter+1)})
-                # pbar.update(1)
+                pbar.set_postfix({'loss': loss.item(), 'lr': cur_lr, 'mean_loss': loss_acc / float(i_iter+1)})
+                pbar.update(1)
                 writer.add_scalar('Train/01_Loss', ret_dict['loss'].item(), global_iter)
                 writer.add_scalar('Train/02_SemLoss', ret_dict['sem_loss'].item(), global_iter)
                 if sum(ret_dict['offset_loss_list']).item() > 0:
@@ -272,8 +273,8 @@ def PolarOffsetMain(args, cfg):
                     ki += writer_acc
                     writer.add_scalar('Train/{}_{}'.format(str(ki).zfill(2), k), ret_dict[k], global_iter)
                 global_iter += 1
-        # if rank == 0:
-        #     pbar.close()
+        if rank == 0:
+            pbar.close()
         
         ### evaluate after each epoch
         logger.info('----EPOCH {} Evaluating----'.format(epoch))

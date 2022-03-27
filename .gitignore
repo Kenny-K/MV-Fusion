@@ -15,3 +15,4 @@ lib/Pointnet2/
 *.pth
 scripts/*
 nohup_log
+pretrained_weight

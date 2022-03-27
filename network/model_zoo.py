@@ -534,6 +534,9 @@ class PolarOffsetSpconvPytorchFusion(PolarOffsetSpconv):
         self.is_fix_semantic_instance = True
 
     def voxelize_fusion(self, inputs):
+        '''
+            point-view & range-view feature fusion
+        '''
         grid_ind = inputs['grid']
         pt_fea = inputs['pt_fea']
         range_img = inputs['range_image']
@@ -603,13 +606,13 @@ class PolarOffsetSpconvPytorchFusion(PolarOffsetSpconv):
         unq_cnt = torch.clamp(unq_cnt,max=self.max_pt)
 
         # process feature
-        processed_cat_pt_fea = self.vfe_model(cat_pt_fea)
-        processed_range_fea = self.range_branch(range_img)
+        processed_cat_pt_fea = self.vfe_model(cat_pt_fea)       # point branch
+        processed_range_fea = self.range_branch(range_img)      # range branch
         #TODO: maybe use pointnet to extract features inside each grid and each grid share the same parameters instead of apply pointnet to global point clouds?
         # This kind of global pointnet is more memory efficient cause otherwise we will have to alloc [480 x 360 x 32 x 64 x C] tensor in order to apply pointnet to each grid
 
-        # Concat Point feature and Range feature(concat)
-        rg_fea_in_pt_view = processed_range_fea[cat_cords[:,0], :, cat_cords[:,1], cat_cords[:,2]]
+        # Point feature and range feature fusion(concat)
+        rg_fea_in_pt_view = processed_range_fea[cat_cords[:,0], :, cat_cords[:,1], cat_cords[:,2]]  # fetch according feature under range-view for each point 
         fusion_fea = torch.cat([processed_cat_pt_fea, rg_fea_in_pt_view], axis=1)
 
         if self.pt_pooling == 'max':
@@ -628,7 +631,7 @@ class PolarOffsetSpconvPytorchFusion(PolarOffsetSpconv):
         # out_data = out_data.permute(0,3,1,2)
         del pt_fea, xy_ind
 
-        # fetch range-view feature in origin point order
+        # fetch range-view feature in origin point order for cylinder&range fusion
         rg_fea_list = []
         for batch_i in range(len(cords)):
             rg_fea_list.append( processed_range_fea[batch_i, :, cords[batch_i][:,0], cords[batch_i][:,1]].transpose(0,1) )

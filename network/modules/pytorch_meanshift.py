@@ -399,9 +399,11 @@ class PytorchMeanshiftFusion(nn.Module):
                 else:
                     fg_rg_fea = rg_fea[valid_[batch_i]][index_[batch_i]]        # [N', C]
                     fg_X_fea = ins_fea[valid_[batch_i]][index_[batch_i]]
+
+                # shared projection from range-view feature to query and key
                 query_key = self.query_projection(fg_rg_fea)
-                if query_key.shape[0] <= 10:
-                    print('Handling a frame with {} foreground point'.format(query_key.shape[0]))
+                # if query_key.shape[0] <= 10:
+                #     print('Handling a frame with {} foreground point'.format(query_key.shape[0]))
 
                 assert len(query_key.shape) == 2, print('All points feature with shape\n',
                                                     rg_fea.shape,
@@ -411,6 +413,7 @@ class PytorchMeanshiftFusion(nn.Module):
                                                     fg_X_fea.shape,
                                                     '\nPoint Cartesian Coordinates shape\n',
                                                     X.shape)
+                # self-attention in range-view for updating voxel-view feature
                 weight = torch.softmax(torch.matmul(query_key, query_key.transpose(0,1)) / math.sqrt(query_key.shape[1]) , dim=1)
                 X_fea = self.norm(fg_X_fea + torch.matmul(weight, fg_X_fea))
                 X_fea = self.norm(X_fea + self.feed_forward(X_fea))
