@@ -1,5 +1,18 @@
 ngpu=2
-tag=train_dsnet_pytorch_fusion_rangeconv_dist
+tag=slot_0200
+# export CUDA_VISIBLE_DEVICES=1
+python trial_train.py --batch_size 1 --config cfgs/release/fusion.yaml\
+             --tag ${tag}\
+             --pretrained_ckpt pretrained_weight/kitti_v121.pth\
+             --nofix
+
+
+#  0303 - slot!
+#  0403 - slot
+#  0301 - slot
+#  0300 - nuscenes baseline ?
+
+
 
 # python -m torch.distributed.launch --nproc_per_node=${ngpu} cfg_train.py \
 #     --tcp_port 12345 \
@@ -18,10 +31,3 @@ tag=train_dsnet_pytorch_fusion_rangeconv_dist
 #     --tag ${tag} \
     # --launcher pytorch \
 # export LD_LIBRARY_PATH='usr/local/cuda/lib64:/usr/local/cuda-11.4/lib64'
-
-export CUDA_VISIBLE_DEVICES=1
-python trial_train.py --batch_size 1 --config cfgs/release/mininet.yaml\
-             --tag testing \
-             --pretrained_ckpt pretrained_weight/pretrained_fusion.pth\
-             --nofix
-

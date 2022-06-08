@@ -107,6 +107,7 @@ def parse_config():
     parser.add_argument('--pretrained_ckpt', type=str, default=None)
     parser.add_argument('--nofix', action='store_true', default=False)
     parser.add_argument('--fix_semantic_instance', action='store_true', default=False)
+    parser.add_argument('--debug', action='store_true', default=False)
     args = parser.parse_args()
     cfg_from_yaml_file(args.config, cfg)
     return args, cfg

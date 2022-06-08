@@ -14,6 +14,7 @@ from ..loss.instance_losses import pairwise_distance
 from sklearn.neighbors import NearestNeighbors
 from utils.common_utils import safe_vis
 from utils.config import global_cfg
+from torch.utils.checkpoint import checkpoint
 
 class PytorchMeanshift(nn.Module):
     def __init__(self, cfg, loss_fn, cluster_fn):
@@ -74,24 +75,24 @@ class PytorchMeanshift(nn.Module):
         return torch.stack(loss_list).sum()
 
     def calc_shifted_matrix_flat_kernel_bandwidth_weight(self, X, X_fea, iter_i):
-        XT = X.T
-        _weights = self.learnable_bandwidth_weights_layer_list[iter_i](X_fea).view(-1, len(self.bandwidth))
-        weights = torch.softmax(_weights, dim=1)
+        XT = X.T        # 3xN
+        _weights = self.learnable_bandwidth_weights_layer_list[iter_i](X_fea).view(-1, len(self.bandwidth))     # Nx3
+        weights = torch.softmax(_weights, dim=1)        # Nx3
         new_X_list = []
         if self.data_mode == 'offset':
-            dist = pairwise_distance(X)
+            dist = pairwise_distance(X)     # NxN
         else:
             raise NotImplementedError
         for bandwidth_i in range(len(self.bandwidth)):
             if self.data_mode == 'offset':
-                K = (dist <= self.bandwidth[bandwidth_i] ** 2).float()
+                K = (dist <= self.bandwidth[bandwidth_i] ** 2).float()      # NxN (bool)
                 K.fill_diagonal_(1)     # fatal error: current point may not be included in the radius ball according to float num bias
             else:
                 raise NotImplementedError
-            D = torch.matmul(K, torch.ones([X.shape[0], 1]).cuda()).view(-1)
-            _new_X = torch.matmul(XT, K) / D
-            new_X_list.append(_new_X * weights[:, bandwidth_i].view(-1))
-        new_X = torch.sum(torch.stack(new_X_list), dim=0) / torch.sum(weights, dim=1).view(-1)
+            D = torch.matmul(K, torch.ones([X.shape[0], 1]).cuda()).view(-1)    # Nx1 how many points are there in the radius ball of the current point
+            _new_X = torch.matmul(XT, K) / D            # 3xN   for each point, take mean coor of all points in its radius ball
+            new_X_list.append(_new_X * weights[:, bandwidth_i].view(-1))        # 3xN * N(element-wise multiplication) -> 3xN
+        new_X = torch.sum(torch.stack(new_X_list), dim=0) / torch.sum(weights, dim=1).view(-1)      # 3xN
         if torch.isnan(new_X.sum()):
             import pdb; pdb.set_trace()
         if self.data_mode == 'offset':
@@ -232,6 +233,12 @@ class PytorchMeanshiftFusion(nn.Module):
         self.ff_dim = 256
         self.query_projection = nn.Linear(cfg.MODEL.VFE.OUT_CHANNEL, self.init_size)
         # self.key_projection = nn.Linear(cfg.MODEL.VFE.OUT_CHANNEL, self.init_size)
+
+        self.use_extra_attention = False
+        if cfg.MODEL.ATTENTION.EXTRA_LAYER > 0:
+            self.use_extra_attention = True
+            self.transformerEncoderLayer = nn.TransformerEncoderLayer(d_model=self.init_size, nhead=cfg.MODEL.ATTENTION.HEAD)
+            self.transformerEncoder = nn.TransformerEncoder(encoder_layer=self.transformerEncoderLayer, num_layers=cfg.MODEL.ATTENTION.EXTRA_LAYER)
 
         self.norm = nn.LayerNorm(self.init_size)
         self.feed_forward = nn.Sequential(
@@ -394,8 +401,8 @@ class PytorchMeanshiftFusion(nn.Module):
 
                 assert rg_fea.shape[0] == ins_fea.shape[0], print(rg_fea.shape, ins_fea.shape)
                 if index_[batch_i] is None:
-                    fg_rg_fea = rg_fea[valid_[batch_i]]     # [N', C]
-                    fg_X_fea = ins_fea[valid_[batch_i]]
+                    fg_rg_fea = rg_fea[valid_[batch_i]]     # [N', C]   N' = VFE.CHANNEL
+                    fg_X_fea = ins_fea[valid_[batch_i]]               # N' = init_size
                 else:
                     fg_rg_fea = rg_fea[valid_[batch_i]][index_[batch_i]]        # [N', C]
                     fg_X_fea = ins_fea[valid_[batch_i]][index_[batch_i]]
@@ -417,6 +424,12 @@ class PytorchMeanshiftFusion(nn.Module):
                 weight = torch.softmax(torch.matmul(query_key, query_key.transpose(0,1)) / math.sqrt(query_key.shape[1]) , dim=1)
                 X_fea = self.norm(fg_X_fea + torch.matmul(weight, fg_X_fea))
                 X_fea = self.norm(X_fea + self.feed_forward(X_fea))
+                # print('fusioned fea ? ', X_fea.requires_grad)
+                if self.use_extra_attention:
+                    X_fea = torch.unsqueeze(X_fea,dim=1)
+                    X_fea = checkpoint(self.transformerEncoder, X_fea, preserve_rng_state=True)
+                    X_fea = torch.squeeze(X_fea,dim=1)
+                # print('extra fusioned fea ? ', X_fea.requires_grad)
                 
                 # X_fea = ins_fea[valid_[batch_i]][index_[batch_i]].reshape(-1, self.init_size)
             for iter_i in range(self.iteration):

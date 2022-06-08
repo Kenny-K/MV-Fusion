@@ -5,7 +5,7 @@ DATA_CONFIG:
     RETURN_REF: True
     RETURN_INS_ID: True
     DATALOADER:
-        VOXEL_TYPE: Spherical  #Spherical
+        VOXEL_TYPE: Spherical
         GRID_SIZE: [480, 360, 32]
         AUGMENTATION:
             ROTATE: True
@@ -24,10 +24,10 @@ DATA_CONFIG:
 
 OPTIMIZE:
     LR: 0.002
-    MAX_EPOCH: 40
+    MAX_EPOCH: 50
 
 MODEL:
-    NAME: PolarOffsetSpconvPytorchMeanshift #PolarOffsetSpconv 
+    NAME: PolarOffsetSpconvPytorchMeanshift
     MODEL_FN:
         PT_POOLING: max
         MAX_PT_PER_ENCODE: 256

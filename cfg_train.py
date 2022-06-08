@@ -181,7 +181,8 @@ def PolarOffsetMain(args, cfg):
             vbar = tqdm(total=len(val_dataset_loader), dynamic_ncols=True)
         for i_iter, inputs in enumerate(val_dataset_loader):
             inputs['i_iter'] = i_iter
-            torch.cuda.empty_cache()
+            if i_iter % 1000 == 0:
+                torch.cuda.empty_cache()
             with torch.no_grad():
                 ret_dict = model(inputs, is_test=True, before_merge_evaluator=before_merge_evaluator,
                                 after_merge_evaluator=after_merge_evaluator, require_cluster=True)
@@ -222,9 +223,12 @@ def PolarOffsetMain(args, cfg):
         if rank == 0:
             pbar = tqdm(total=len(train_dataset_loader), dynamic_ncols=True)
         for i_iter, inputs in enumerate(train_dataset_loader):
-            torch.cuda.empty_cache()
+            if i_iter % 1000 == 0:
+                torch.cuda.empty_cache()
             torch.autograd.set_detect_anomaly(True)
+            # print(torch.cuda.memory_allocated()//(1024*1024))
             model.train()
+            # print(torch.cuda.memory_allocated()//(1024*1024))
             optimizer.zero_grad()
             inputs['i_iter'] = i_iter
             inputs['rank'] = rank
@@ -239,10 +243,13 @@ def PolarOffsetMain(args, cfg):
                 loss = sum(ret_dict['meanshift_loss'])
             else:
                 loss = ret_dict['loss']
+            # print(torch.cuda.memory_allocated()//(1024*1024))
             loss.backward()
             optimizer.step()
-
-            torch.cuda.empty_cache()
+            # print(torch.cuda.memory_allocated()//(1024*1024))
+            # print(torch.cuda.max_memory_reserved()//(1024*1024))
+            # print(torch.cuda.max_memory_allocated()//(1024*1024))
+            # torch.cuda.empty_cache()
             if rank == 0:
                 try:
                     cur_lr = float(optimizer.lr)
@@ -282,7 +289,8 @@ def PolarOffsetMain(args, cfg):
         if rank == 0:
             vbar = tqdm(total=len(val_dataset_loader), dynamic_ncols=True)
         for i_iter, inputs in enumerate(val_dataset_loader):
-            torch.cuda.empty_cache()
+            if i_iter % 1000 == 0:
+                torch.cuda.empty_cache()
             inputs['i_iter'] = i_iter
             inputs['rank'] = rank
             with torch.no_grad():

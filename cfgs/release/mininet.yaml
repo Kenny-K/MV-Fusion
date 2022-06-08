@@ -5,8 +5,8 @@ DATA_CONFIG:
     RETURN_REF: True
     RETURN_INS_ID: True
     DATALOADER:
-        VOXEL_TYPE: Fusion  #Spherical
-        GRID_SIZE: [400, 300, 32]
+        VOXEL_TYPE: Fusion  # Spherical
+        GRID_SIZE: [480, 360, 32]   # [480,360,32] 180 for fusion_half 
         AUGMENTATION:
             ROTATE: True
             FLIP: True
@@ -24,7 +24,7 @@ DATA_CONFIG:
 
 OPTIMIZE:
     LR: 0.002
-    MAX_EPOCH: 30
+    MAX_EPOCH: 60
 
 MODEL:
     NAME: PolarOffsetSpconvPytorchFusion #PolarOffsetSpconvPytorchMeanShift
@@ -42,7 +42,7 @@ MODEL:
         IN_CHANNEL: 5
     BACKBONE:
         NAME: Spconv_salsaNet_res_cfg
-        INIT_SIZE: 16
+        INIT_SIZE: 32
     SEM_HEAD:
         NAME: Spconv_sem_logits_head_cfg
     INS_HEAD:

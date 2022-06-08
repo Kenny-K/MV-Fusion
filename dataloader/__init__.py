@@ -4,19 +4,21 @@ from torch.utils.data import DistributedSampler as _DistributedSampler
 
 import os
 
-from .dataset import SemKITTI, spherical_dataset, fusion_dataset, collate_fn_BEV, collate_fn_BEV_test, collate_fn_BEV_fusion
+from .dataset import SemKITTI, NuScenes, spherical_dataset, fusion_dataset, collate_fn_BEV, collate_fn_BEV_test, collate_fn_BEV_fusion, fusion_half_dataset
 from utils import common_utils
 
 from utils.config import global_args
 
 __all_voxel_dataset__ =  {
     'Spherical': spherical_dataset,
-    'Fusion': fusion_dataset
+    'Fusion': fusion_dataset,
+    'Fusion_Half': fusion_half_dataset
 }
 
 __all_collate_fn__ = {
     'Spherical': collate_fn_BEV,
-    'Fusion': collate_fn_BEV_fusion
+    'Fusion': collate_fn_BEV_fusion,
+    'Fusion_Half': collate_fn_BEV_fusion
 }
 
 class DistributedSampler(_DistributedSampler):
@@ -72,6 +74,37 @@ def build_dataloader(args, cfg, split='train', logger=None, no_shuffle=False, no
             logger.info("Scale Augmentation: {}".format(cfg.DATA_CONFIG.DATALOADER.AUGMENTATION.SCALE and is_training and (not no_aug)))
             logger.info("Transform Augmentation: {}".format(cfg.DATA_CONFIG.DATALOADER.AUGMENTATION.TRANSFORM and is_training and (not no_aug)))
             logger.info("Rotate Augmentation: {}".format(cfg.DATA_CONFIG.DATALOADER.AUGMENTATION.ROTATE and is_training and (not no_aug)))
+    
+    elif cfg.DATA_CONFIG.DATASET_NAME == 'NuScenes':
+        train_pt_dataset = NuScenes(
+            cfg.DATA_CONFIG.DATASET_PATH,
+            imageset = split,
+            return_ref = cfg.DATA_CONFIG.RETURN_REF,
+            return_ins = cfg.DATA_CONFIG.RETURN_INS_ID
+        )
+        train_dataset=__all_voxel_dataset__[cfg.DATA_CONFIG.DATALOADER.VOXEL_TYPE](
+            train_pt_dataset,
+            grid_size = cfg.DATA_CONFIG.DATALOADER.GRID_SIZE,
+            flip_aug = cfg.DATA_CONFIG.DATALOADER.AUGMENTATION.FLIP and is_training and (not no_aug),
+            scale_aug = cfg.DATA_CONFIG.DATALOADER.AUGMENTATION.SCALE and is_training and (not no_aug),
+            transform_aug= cfg.DATA_CONFIG.DATALOADER.AUGMENTATION.TRANSFORM and is_training and (not no_aug),
+            trans_std= cfg.DATA_CONFIG.DATALOADER.AUGMENTATION.TRANSFORM_STD,
+            min_rad = -np.pi / 4,
+            max_rad = np.pi / 4,
+            ignore_label = cfg.DATA_CONFIG.DATALOADER.CONVERT_IGNORE_LABEL,
+            rotate_aug = cfg.DATA_CONFIG.DATALOADER.AUGMENTATION.ROTATE and is_training and (not no_aug),
+            fixed_volume_space = cfg.DATA_CONFIG.DATALOADER.FIXED_VOLUME_SPACE,
+            H = cfg.MODEL.RANGE.H,
+            W = cfg.MODEL.RANGE.W,
+            fov_up = cfg.MODEL.RANGE.FOV_UP,
+            fov_down = cfg.MODEL.RANGE.FOV_DOWN,
+        )
+        if logger is not None:
+            logger.info("Flip Augmentation: {}".format(cfg.DATA_CONFIG.DATALOADER.AUGMENTATION.FLIP and is_training and (not no_aug)))
+            logger.info("Scale Augmentation: {}".format(cfg.DATA_CONFIG.DATALOADER.AUGMENTATION.SCALE and is_training and (not no_aug)))
+            logger.info("Transform Augmentation: {}".format(cfg.DATA_CONFIG.DATALOADER.AUGMENTATION.TRANSFORM and is_training and (not no_aug)))
+            logger.info("Rotate Augmentation: {}".format(cfg.DATA_CONFIG.DATALOADER.AUGMENTATION.ROTATE and is_training and (not no_aug)))
+    
     else:
         raise NotImplementedError
 

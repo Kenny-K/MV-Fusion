@@ -1,12 +1,12 @@
 DATA_CONFIG:
-    DATASET_NAME: SemanticKitti  # SemanticKitti NuScenes
-    DATASET_PATH: "/sharedata/home/jiangq/DATA/kitti/data"   # "/sharedata/home/jiangq/DATA/kitti/data"    "/sharedata/home/shared/jiangq/nuscenes"
-    NCLASS: 20
+    DATASET_NAME: NuScenes  # SemanticKitti NuScenes
+    DATASET_PATH: "/sharedata/home/shared/jiangq/nuscenes"   # "/sharedata/home/jiangq/DATA/kitti/data"    "/sharedata/home/shared/jiangq/nuscenes"
+    NCLASS: 17              # 20 17
     RETURN_REF: True
     RETURN_INS_ID: True
     DATALOADER:
-        VOXEL_TYPE: Fusion  #Spherical
-        GRID_SIZE: [480, 360, 32]
+        VOXEL_TYPE: Fusion  #Spherical Fusion
+        GRID_SIZE: [480, 360, 16]
         AUGMENTATION:
             ROTATE: True
             FLIP: True
@@ -27,7 +27,7 @@ OPTIMIZE:
     MAX_EPOCH: 60
 
 MODEL:
-    NAME: PolarOffsetSpconvPytorchFusion #PolarOffsetSpconvPytorchMeanShift
+    NAME: PolarOffsetSpconvPytorchFusion #PolarOffsetSpconvPytorchMeanshift  PolarOffsetSpconvPytorchFusion
     MODEL_FN:
         PT_POOLING: max
         MAX_PT_PER_ENCODE: 256
@@ -40,13 +40,13 @@ MODEL:
         NAME: Spconv_salsaNet_res_cfg
         INIT_SIZE: 32
     RANGE:
-        NAME: RangeNet
+        NAME: RangeConvNet
         RANGE_CONV: False
         IN_CHANNEL: 5
-        H: 64
+        H: 32       # 64  32
         W: 1024
-        FOV_UP: 3.0
-        FOV_DOWN: -25.0
+        FOV_UP: 10.0    # 3.0  10.0
+        FOV_DOWN: -30.0 # -25.0 -30.0
     SEM_HEAD:
         NAME: Spconv_sem_logits_head_cfg
     INS_HEAD:

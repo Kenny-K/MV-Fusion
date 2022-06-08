@@ -15,6 +15,9 @@ from torch.utils import data
 from tqdm import tqdm
 from scipy import stats as s
 
+from nuscenes.nuscenes import NuScenes as NuSc
+from nuscenes.utils.data_io import load_bin_file
+
 # load Semantic KITTI class info
 with open("semantic-kitti.yaml", 'r') as stream:
     semkittiyaml = yaml.safe_load(stream)
@@ -30,6 +33,131 @@ for i in sorted(list(semkittiyaml['learning_map'].keys()))[::-1]:
 #         things_ids.append(i)
 
 # print(things_ids)
+
+class NuScenes(data.Dataset):
+    def __init__(self, data_path, imageset = 'train', return_ref = False, return_ins = False):
+        self.return_ref = return_ref
+        self.return_ins = return_ins
+        self.data_path = data_path
+        self.imageset = imageset
+        self.learning_map = {
+            1: 0,
+            5: 0,
+            7: 0,
+            8: 0,
+            10:0,
+            11:0,
+            13:0,
+            19:0,
+            20:0,
+            0: 0,
+            29:0,
+            31:0,
+            9: 1,
+            14:2,
+            15:3,
+            16:3,
+            17:4,
+            18:5,
+            21:6,
+            2: 7,
+            3: 7,
+            4: 7,
+            6: 7,
+            12:8,
+            22:9,
+            23:10,
+            24:11,
+            25:12,
+            26:13,
+            27:14,
+            28:15,
+            30:16
+        }
+
+        if imageset == 'test':
+            self.dataset = NuSc(version='v1.0-test', dataroot=self.data_path, verbose=True)
+        else:
+            self.dataset = NuSc(version='v1.0-trainval', dataroot=self.data_path, verbose=True)
+            self.dataset.lidarseg_idx2name_mapping
+
+        self.token_list = []
+        for sample in self.dataset.sample:
+            self.token_list.append(sample['token'])
+        
+        if imageset == 'train':
+            self.token_list = self.token_list[:28130]
+        elif imageset == 'val':
+            self.token_list = self.token_list[28130:]
+        else:
+            print('FATAL! Imageset must be train / val / test')
+
+        self.things_ids = [9, 14, 15, 16, 17, 18, 21, 2, 3, 4, 6, 12, 22, 23]
+
+    def __len__(self):
+        return len(self.token_list)
+
+    def read_point_cloud(self, file_name):
+        '''
+        pcl_file_name == 'xxxx_LIDAR_TOP_token.pcd.bin'
+        return points of (x,y,z,intensity) -> pcl
+        where pcl.points is a (nbr_pts,dim) np.array
+        To get the ith points(x,y,z,r) pcl[i-1,:]
+        '''
+        assert file_name.endswith('.bin'), 'Unsupported filetype {}'.format(file_name)
+
+        scan = np.fromfile(file_name, dtype=np.float32)
+        points = scan.reshape((-1, 5))[:, :4]
+        return points
+
+    def read_panoptic_label(self,npz_file_name):
+        '''
+        npz_file_name = 'token_panoptic.npz'
+        return label np.array of shape (nbr_points, 1)
+        '''
+        bin_content = load_bin_file(npz_file_name,type='panoptic')
+        return bin_content.T
+
+    def __getitem__(self, idx):
+        """
+        NuScenes Panoptic Labels format: (general class index * 1000 + instance index)
+        Note here general class index (32 classes in total) rather than the challenge class index (16 classes in total) is used.
+
+        Returns:
+            raw_data: (N, 4), x y z r
+            batch_cnt: int
+            label: int, class label.
+        """
+
+        # Read Sample, which is a key frame in a scene.
+        sample = self.dataset.get('sample', self.token_list[idx])
+        # Read Point Cloud
+        pcl_token = sample['data']['LIDAR_TOP']
+        data_file_name = self.data_path + '/' + self.dataset.get('sample_data',pcl_token)['filename']
+        raw_data = self.read_point_cloud(data_file_name)  #(N,4)
+
+        if self.imageset == 'test':
+            annotated_data = np.expand_dims(np.zeros_like(raw_data[:,0],dtype=int),axis=1)
+            sem_labels = annotated_data
+            ins_labels = annotated_data
+            valid = annotated_data
+        else:
+            label_file_name = self.data_path + '/panoptic/v1.0-trainval/' + pcl_token + '_panoptic.npz'
+            annotated_data = self.read_panoptic_label(label_file_name)
+            annotated_data = annotated_data.reshape(-1,1)
+            assert annotated_data.shape[0] == raw_data.shape[0], print("WARNING! Labels not matched with points!")
+            sem_labels = (annotated_data // 1000).astype(np.int64)
+            ins_labels = (annotated_data % 1000).astype(np.int64)
+            valid = np.isin(sem_labels, self.things_ids).reshape(-1)
+            sem_labels = np.vectorize(self.learning_map.__getitem__)(sem_labels)
+        data_tuple = (raw_data[:,:3], sem_labels.astype(np.uint8))
+        if self.return_ref:
+            data_tuple += (raw_data[:,3],)
+        if self.return_ins:
+            data_tuple += (ins_labels, valid)
+        data_tuple += (self.token_list[idx],)
+        return data_tuple   # ( x y z sem_label ref ins_label valid im_index ) length: 8
+
 
 class SemKITTI(data.Dataset):
     def __init__(self, data_path, imageset = 'train', return_ref = False, return_ins = False):
@@ -283,7 +411,7 @@ class spherical_dataset(data.Dataset):
                min_rad=-np.pi/4, max_rad=np.pi/4, ignore_label = 255,
                return_test = False, fixed_volume_space= False,
                max_volume_space = [50,np.pi,1.5], min_volume_space = [3,-np.pi,-3],
-               center_type='Axis_center'):
+               center_type='Axis_center', H=None, W=None, fov_up=None, fov_down=None):
         'Initialization'
         self.point_cloud_dataset = in_dataset
         self.grid_size = np.asarray(grid_size)
@@ -627,6 +755,269 @@ class fusion_dataset(data.Dataset):
 
         # process labels
         processed_label = np.ones(self.grid_size,dtype = np.uint8)*self.ignore_label
+        label_voxel_pair = np.concatenate([grid_ind,labels],axis = 1)
+        label_voxel_pair = label_voxel_pair[np.lexsort((grid_ind[:,0],grid_ind[:,1],grid_ind[:,2])),:]
+        processed_label = nb_process_label(np.copy(processed_label),label_voxel_pair)
+        data_tuple = (voxel_position,processed_label)
+
+        # center data on each voxel for PTnet
+        voxel_centers = (grid_ind.astype(np.float32) + 0.5)*intervals + min_bound
+        return_xyz = xyz_pol - voxel_centers #TODO: calculate relative coordinate using polar system?
+        return_xyz = np.concatenate((return_xyz,xyz_pol,xyz[:,:2]),axis = 1)
+
+        if len(data) == 2:
+            return_fea = return_xyz
+        elif len(data) >= 3:
+            return_fea = np.concatenate((return_xyz,sig[...,np.newaxis]),axis = 1)
+
+        if self.return_test:
+            data_tuple += (grid_ind,labels,return_fea,index)
+        else:
+            data_tuple += (grid_ind,labels,return_fea) # (grid-wise coor, grid-wise sem label, point-wise grid index, point-wise sem label, [relative polar coor(3), polar coor(3), cat coor(2), ref signal(1)])
+
+        if len(data) == 6:
+            offsets = np.zeros([xyz.shape[0], 3], dtype=np.float32)
+            offsets = nb_aggregate_pointwise_center_offset(offsets, xyz, ins_labels, self.center_type)
+            data_tuple += (ins_labels, offsets, valid, xyz, range_image, pt_pix_mapping, pcd_fname) # plus (point-wise instance label, point-wise center offset)
+
+        if len(data) == 7:
+            offsets = np.zeros([xyz.shape[0], 3], dtype=np.float32)
+            offsets = nb_aggregate_pointwise_center_offset(offsets, xyz, ins_labels, self.center_type)
+            data_tuple += (ins_labels, offsets, valid, xyz, pcd_fname, minicluster) # plus (point-wise instance label, point-wise center offset)
+
+        return data_tuple
+
+
+class fusion_half_dataset(data.Dataset):
+    def __init__(self, in_dataset, grid_size, rotate_aug = False, flip_aug = False,
+               scale_aug =False, transform_aug=False, trans_std=[0.1, 0.1, 0.1],
+               min_rad=-np.pi/4, max_rad=np.pi/4, ignore_label = 255,
+               return_test = False, fixed_volume_space= False,
+               max_volume_space = [50,np.pi,1.5], min_volume_space = [3,-np.pi,-3],
+               center_type='Axis_center', H=64, W=1024, fov_up=3.0, fov_down=-25.0):
+        'Initialization'
+        self.point_cloud_dataset = in_dataset
+        self.half_grid_size = np.asarray(grid_size)
+        self.grid_size = np.copy(self.half_grid_size)
+        self.grid_size[1] = self.grid_size[1] * 2
+        self.rotate_aug = rotate_aug
+        self.flip_aug = flip_aug
+        self.ignore_label = ignore_label
+        self.return_test = return_test
+        self.fixed_volume_space = fixed_volume_space
+        self.max_volume_space = max_volume_space
+        self.min_volume_space = min_volume_space
+
+        self.scale_aug = scale_aug
+        self.transform = transform_aug
+        self.trans_std = trans_std
+        self.noise_rotation = np.random.uniform(min_rad, max_rad)
+
+        assert center_type in ['Axis_center', 'Mass_center']
+        self.center_type = center_type
+
+        self.proj_H = H
+        self.proj_W = W
+        self.proj_fov_up = fov_up
+        self.proj_fov_down = fov_down
+        self.reset()
+
+    def reset(self):
+        """ Reset scan members. """
+        self.points = np.zeros((0, 3), dtype=np.float32)        # [m, 3]: x, y, z
+        self.remissions = np.zeros((0, 1), dtype=np.float32)    # [m ,1]: remission
+
+        # projected range image - [H,W] range (-1 is no data)
+        self.proj_range = np.full((self.proj_H, self.proj_W), -1,
+                                dtype=np.float32)
+
+        # unprojected range (list of depths for each point)
+        self.unproj_range = np.zeros((0, 1), dtype=np.float32)
+
+        # projected point cloud xyz - [H,W,3] xyz coord (-1 is no data)
+        self.proj_xyz = np.full((self.proj_H, self.proj_W, 3), -1,
+                                dtype=np.float32)
+
+        # projected remission - [H,W] intensity (-1 is no data)
+        self.proj_remission = np.full((self.proj_H, self.proj_W), -1,
+                                    dtype=np.float32)
+
+        # projected index (for each pixel, what I am in the pointcloud)
+        # [H,W] index (-1 is no data)
+        self.proj_idx = np.full((self.proj_H, self.proj_W), -1,
+                                dtype=np.int32)
+
+        # for each point, where it is in the range image
+        self.proj_x = np.zeros((0, 1), dtype=np.float32)        # [m, 1]: x
+        self.proj_y = np.zeros((0, 1), dtype=np.float32)        # [m, 1]: y
+
+        # mask containing for each pixel, if it contains a point or not
+        self.proj_mask = np.zeros((self.proj_H, self.proj_W),
+                                dtype=np.int32)       # [H,W] mask
+
+    def __len__(self):
+        'Denotes the total number of samples'
+        return len(self.point_cloud_dataset)
+
+    def do_range_projection(self):
+        """ Project a pointcloud into a spherical projection image.projection.
+            Function takes no arguments because it can be also called externally
+            if the value of the constructor was not set (in case you change your
+            mind about wanting the projection)
+        """
+        # laser parameters
+        fov_up = self.proj_fov_up / 180.0 * np.pi      # field of view up in rad
+        fov_down = self.proj_fov_down / 180.0 * np.pi  # field of view down in rad
+        fov = abs(fov_down) + abs(fov_up)  # get field of view total in rad
+
+        # get depth of all points
+        depth = np.linalg.norm(self.points, 2, axis=1)
+
+        # get scan components
+        scan_x = self.points[:, 0]
+        scan_y = self.points[:, 1]
+        scan_z = self.points[:, 2]
+
+        # get angles of all points
+        yaw = -np.arctan2(scan_y, scan_x)
+        pitch = np.arcsin(scan_z / depth)
+
+        # get projections in image coords
+        proj_x = 0.5 * (yaw / np.pi + 1.0)          # in [0.0, 1.0]
+        proj_y = 1.0 - (pitch + abs(fov_down)) / fov        # in [0.0, 1.0]
+
+        # scale to image size using angular resolution
+        proj_x *= self.proj_W                              # in [0.0, W]
+        proj_y *= self.proj_H                              # in [0.0, H]
+
+        # round and clamp for use as index
+        proj_x = np.floor(proj_x)
+        proj_x = np.minimum(self.proj_W - 1, proj_x)
+        proj_x = np.maximum(0, proj_x).astype(np.int32)   # in [0,W-1]
+        self.proj_x = np.copy(proj_x)  # store a copy in orig order
+
+        proj_y = np.floor(proj_y)
+        proj_y = np.minimum(self.proj_H - 1, proj_y)
+        proj_y = np.maximum(0, proj_y).astype(np.int32)   # in [0,H-1]
+        self.proj_y = np.copy(proj_y)  # stope a copy in original order
+
+        # copy of depth in original order
+        self.unproj_range = np.copy(depth)
+
+        # order in decreasing depth
+        indices = np.arange(depth.shape[0])
+        order = np.argsort(depth)[::-1]
+        depth = depth[order]
+        indices = indices[order]
+        points = self.points[order]
+        remission = self.remissions[order]
+        proj_y = proj_y[order]
+        proj_x = proj_x[order]
+
+        # assing to images
+        self.proj_range[proj_y, proj_x] = depth
+        self.proj_xyz[proj_y, proj_x] = points
+        self.proj_remission[proj_y, proj_x] = remission
+        self.proj_idx[proj_y, proj_x] = indices
+        self.proj_mask = (self.proj_idx > 0).astype(np.float32)
+
+    def __getitem__(self, index):
+        'Generates one sample of data'
+        data = self.point_cloud_dataset[index]
+        if len(data) == 2:
+            xyz,labels = data
+        elif len(data) == 3:
+            xyz,labels,sig = data
+            if len(sig.shape) == 2: sig = np.squeeze(sig)
+        elif len(data) == 6:
+            xyz,labels,sig,ins_labels,valid,pcd_fname = data
+            if len(sig.shape) == 2: sig = np.squeeze(sig)
+        elif len(data) == 7:
+            xyz,labels,sig,ins_labels,valid,pcd_fname,minicluster = data
+            if len(sig.shape) == 2: sig = np.squeeze(sig)
+        else: raise Exception('Return invalid data tuple')
+
+        # random data augmentation by rotation
+        if self.rotate_aug:
+            rotate_rad = np.deg2rad(np.random.random()*360)
+            c, s = np.cos(rotate_rad), np.sin(rotate_rad)
+            j = np.matrix([[c, s], [-s, c]])
+            xyz[:,:2] = np.dot( xyz[:,:2],j)
+
+        # random data augmentation by flip x , y or x+y
+        if self.flip_aug:
+            flip_type = np.random.choice(4,1)
+            if flip_type==1:
+                xyz[:,0] = -xyz[:,0]
+            elif flip_type==2:
+                xyz[:,1] = -xyz[:,1]
+            elif flip_type==3:
+                xyz[:,:2] = -xyz[:,:2]
+
+        if self.scale_aug:
+            noise_scale = np.random.uniform(0.95, 1.05)
+            xyz[:,0] = noise_scale * xyz[:,0]
+            xyz[:,1] = noise_scale * xyz[:,1]
+
+        if self.transform:
+            noise_translate = np.array([np.random.normal(0, self.trans_std[0], 1),
+                                np.random.normal(0, self.trans_std[1], 1),
+                                np.random.normal(0, self.trans_std[2], 1)]).T
+            xyz[:, 0:3] += noise_translate
+
+        # convert coordinate into polar coordinates
+        xyz_pol = cart2polar(xyz)
+
+        max_bound_r = np.percentile(xyz_pol[:,0],100,axis = 0)
+        min_bound_r = np.percentile(xyz_pol[:,0],0,axis = 0)
+        max_bound = np.max(xyz_pol[:,1:],axis = 0)
+        min_bound = np.min(xyz_pol[:,1:],axis = 0)
+        max_bound = np.concatenate(([max_bound_r],max_bound))
+        min_bound = np.concatenate(([min_bound_r],min_bound))
+        if self.fixed_volume_space:
+            max_bound = np.asarray(self.max_volume_space)
+            min_bound = np.asarray(self.min_volume_space)
+
+        # get grid index
+        crop_range = max_bound - min_bound
+        cur_grid_size = self.grid_size
+        intervals = crop_range/(cur_grid_size-1) # (size-1) could directly get index starting from 0, very convenient
+
+        if (intervals==0).any(): print("Zero interval!")
+        grid_ind = (np.floor((np.clip(xyz_pol,min_bound,max_bound)-min_bound)/intervals)).astype(np.int) # point-wise grid index
+
+        half_mask = grid_ind[:,1] < 180
+        # if np.random.rand() > 0.5:
+        #     half_mask = grid_ind[:,1] < 180
+        # else:
+        #     half_mask = grid_ind[:,1] >= 180
+        grid_ind = grid_ind[half_mask]
+        labels = labels[half_mask]
+        xyz_pol = xyz_pol[half_mask]
+        xyz = xyz[half_mask]
+        sig = sig[half_mask]
+        valid = valid[half_mask]
+        ins_labels = ins_labels[half_mask]
+        # print(np.amax(grid_ind,axis=0))
+        # print(np.amin(grid_ind,axis=0))
+
+        # get range view
+        self.points = xyz
+        self.remissions = sig
+        self.do_range_projection()
+        range_image = np.concatenate([self.proj_range[:,:, np.newaxis], self.proj_xyz, self.proj_remission[:,:,np.newaxis]], axis=-1)
+        range_image = np.transpose(range_image, (2,0,1))        # [C, H, W]
+        pt_pix_mapping = np.concatenate([self.proj_y[:, np.newaxis], self.proj_x[:, np.newaxis]], axis=1)
+
+        # process voxel position
+        voxel_position = np.zeros(self.grid_size,dtype = np.float32)
+        dim_array = np.ones(len(self.grid_size)+1,int)
+        dim_array[0] = -1
+        voxel_position = np.indices(self.grid_size)*intervals.reshape(dim_array) + min_bound.reshape(dim_array)
+        voxel_position = polar2cat(voxel_position)
+
+        # process labels
+        processed_label = np.ones(self.half_grid_size,dtype = np.uint8)*self.ignore_label
         label_voxel_pair = np.concatenate([grid_ind,labels],axis = 1)
         label_voxel_pair = label_voxel_pair[np.lexsort((grid_ind[:,0],grid_ind[:,1],grid_ind[:,2])),:]
         processed_label = nb_process_label(np.copy(processed_label),label_voxel_pair)

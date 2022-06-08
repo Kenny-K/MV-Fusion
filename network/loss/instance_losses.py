@@ -40,7 +40,7 @@ def offset_loss_fun(single_offset_loss_fun):
         mean_loss_list = []
         for i in range(len(loss_list_list)):
             mean_loss_list.append(torch.mean(torch.stack(loss_list_list[i])))
-        return mean_loss_list
+        return mean_loss_list   # (1,) Tensor of loss
     return offset_loss
 
 offset_loss_regress_vec = offset_loss_fun(single_offset_regress_vec)

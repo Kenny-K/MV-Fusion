@@ -9,12 +9,13 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
+from torch.utils.checkpoint import checkpoint_sequential
 from tqdm import tqdm
 
 from utils import train_utils
 from utils import common_utils
 from utils.config import cfg_from_yaml_file, log_config_to_file, global_args, global_cfg
-from utils.evaluate_panoptic import init_eval, printResults
+from utils.evaluate_panoptic import init_eval, printResults, printResultsNuScenes
 from network import build_network
 from dataloader import build_dataloader
 
@@ -125,6 +126,8 @@ def PolarOffsetMain(args, cfg):
                 model.fix_semantic_parameters()
         else:
             logger.info("No Freeze.")
+        for key,val in model.named_parameters():
+            logger.info('Module {}: {}'.format(key, val.requires_grad))
         optimizer = train_utils.build_optimizer(model, cfg)
     elif os.path.exists(ckpt_fname):
         epoch, other_state = train_utils.load_params_with_optimizer_otherstate(model, ckpt_fname, to_cpu=dist_train, optimizer=optimizer, logger=logger) # new feature
@@ -224,17 +227,21 @@ def PolarOffsetMain(args, cfg):
         if rank == 0:
             pbar = tqdm(total=len(train_dataset_loader), dynamic_ncols=True)
         for i_iter, inputs in enumerate(train_dataset_loader):
-            if i_iter % 3000 == 0:
-                torch.cuda.empty_cache()
-            torch.autograd.set_detect_anomaly(True)
+            # if i_iter % 3000 == 0:
+            #     torch.cuda.empty_cache()
+            # torch.autograd.set_detect_anomaly(True)
+            if i_iter > 4500 and args.debug:
+                break
             model.train()
             optimizer.zero_grad()
             inputs['i_iter'] = i_iter
             inputs['rank'] = rank
             ret_dict = model(inputs)
+            # ret_dict = checkpoint_sequential(model, 182, inputs)
             if args.pretrained_ckpt is not None and not args.fix_semantic_instance: # training offset
                 if len(ret_dict['offset_loss_list']) > 0:
                     loss = sum(ret_dict['offset_loss_list'])
+                    # print(loss)
                 else:
                     loss = torch.tensor(0.0, requires_grad=True) #mock pbar
                     ret_dict['offset_loss_list'] = [loss] #mock writer
@@ -244,6 +251,14 @@ def PolarOffsetMain(args, cfg):
                 loss = ret_dict['loss']
             loss.backward()
             optimizer.step()
+            # for name, p in model.named_parameters():
+            #     if name.find('vfe') != -1:
+            #         print(name, p.requires_grad, torch.max(p.grad))
+            # for key, val in optimizer.state_dict().items():
+            #     if key == 'state':
+            #         print(key, val.keys())
+            #     elif key == 'param_groups':
+            #         print(key, val)
 
             # torch.cuda.empty_cache()
             if rank == 0:
@@ -286,6 +301,8 @@ def PolarOffsetMain(args, cfg):
             vbar = tqdm(total=len(val_dataset_loader), dynamic_ncols=True)
         for i_iter, inputs in enumerate(val_dataset_loader):
             # torch.cuda.empty_cache()
+            if args.debug and i_iter > 1500:
+                break
             inputs['i_iter'] = i_iter
             inputs['rank'] = rank
             with torch.no_grad():
@@ -320,9 +337,15 @@ def PolarOffsetMain(args, cfg):
         if rank == 0:
             ## print results
             logger.info("Before Merge Semantic Scores")
-            before_merge_results = printResults(before_merge_evaluator, logger=logger, sem_only=True)
+            if cfg.DATA_CONFIG.DATASET_NAME == 'SemanticKitti':
+                before_merge_results = printResults(before_merge_evaluator, logger=logger, sem_only=True)
+            elif cfg.DATA_CONFIG.DATASET_NAME == 'NuScenes':
+                before_merge_results = printResultsNuScenes(before_merge_evaluator, logger=logger, sem_only=True)
             logger.info("After Merge Panoptic Scores")
-            after_merge_results = printResults(after_merge_evaluator, logger=logger)
+            if cfg.DATA_CONFIG.DATASET_NAME == 'SemanticKitti':
+                after_merge_results = printResults(after_merge_evaluator, logger=logger)
+            elif cfg.DATA_CONFIG.DATASET_NAME == 'NuScenes':
+                after_merge_results = printResultsNuScenes(after_merge_evaluator, logger=logger)
             ## save ckpt
             other_state = {
                 'best_before_iou': best_before_iou,
